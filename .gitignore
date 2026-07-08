@@ -1,0 +1,8 @@
+# Ignore ROS 2 build artifacts
+build/
+install/
+log/
+
+# Explicitly ignore ONLY these two upstream folders inside src
+src/clearpath_common/
+src/clearpath_gz/
