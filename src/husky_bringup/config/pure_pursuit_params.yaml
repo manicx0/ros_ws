@@ -1,0 +1,5 @@
+pure_pursuit:
+  ros__parameters:
+    lookahead_dist: 1.2
+    linear_speed: 0.45
+    loop_rate: 20.0

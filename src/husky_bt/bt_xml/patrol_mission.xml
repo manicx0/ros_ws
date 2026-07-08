@@ -1,0 +1,15 @@
+<root BTCPP_format="4">
+  <BehaviorTree ID="PatrolMission">
+    <KeepRunningUntilFailure>
+      <Sequence>
+        <Fallback>
+          <Sequence>
+            <ObstacleCheck/>
+            <NavigateToGoal goal="1.0,2.0,0.0"/>
+          </Sequence>
+          <RecoveryRotate/>
+        </Fallback>
+      </Sequence>
+    </KeepRunningUntilFailure>
+  </BehaviorTree>
+</root>

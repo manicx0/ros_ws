@@ -1,0 +1,24 @@
+<?xml version="1.0" ?>
+<sdf version="1.8">
+  <world name="outdoor_empty">
+    <scene>
+      <ambient>0.4 0.4 0.4 1.0</ambient>
+      <background>0.6 0.7 0.8 1.0</background>
+      <shadows>true</shadows>
+    </scene>
+    <physics name="default_physics" type="dart">
+      <gravity>0 0 -9.81</gravity>
+    </physics>
+    <light name="sun" type="directional">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.9 0.9 0.9 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+    <include>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/ worlds/Ground Plane</uri>
+      <name>ground_plane</name>
+    </include>
+  </world>
+</sdf>
