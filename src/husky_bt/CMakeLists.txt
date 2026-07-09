@@ -3,6 +3,7 @@ project(husky_bt)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(behaviortree_cpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -22,7 +23,7 @@ target_link_libraries(mission_executor_node
 )
 
 ament_target_dependencies(mission_executor_node
-  rclcpp geometry_msgs sensor_msgs nav_msgs std_msgs husky_msgs ament_index_cpp
+  rclcpp rclcpp_action geometry_msgs sensor_msgs nav_msgs std_msgs husky_msgs ament_index_cpp
 )
 
 install(TARGETS mission_executor_node DESTINATION lib/${PROJECT_NAME})
