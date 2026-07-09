@@ -7,7 +7,7 @@
 #include "behaviortree_cpp/loggers/bt_cout_logger.h"
 #include "std_msgs/msg/bool.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
-#include "geometry_msgs/msg/twist.hpp"
+#include "geometry_msgs/msg/twist_stamped.hpp"
 #include "husky_msgs/msg/robot_state.hpp"
 #include "husky_msgs/msg/goal_event.hpp"
 #include "husky_msgs/srv/set_robot_state.hpp"
@@ -34,7 +34,7 @@ public:
 
     state_pub_ = create_publisher<husky_msgs::msg::RobotState>("robot_state", 10);
     event_pub_ = create_publisher<husky_msgs::msg::GoalEvent>("/fleet/goal_events", 10);
-    cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
+    cmd_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", 10);
 
     set_state_srv_ = create_service<husky_msgs::srv::SetRobotState>(
       "set_robot_state",
@@ -231,9 +231,10 @@ private:
   }
 
   void publishZeroVelocity() {
-    geometry_msgs::msg::Twist cmd;
-    cmd.linear.x = 0.0;
-    cmd.angular.z = 0.0;
+    geometry_msgs::msg::TwistStamped cmd;
+    cmd.header.stamp = now();
+    cmd.twist.linear.x = 0.0;
+    cmd.twist.angular.z = 0.0;
     cmd_pub_->publish(cmd);
   }
 
@@ -253,7 +254,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_sub_;
   rclcpp::Publisher<husky_msgs::msg::RobotState>::SharedPtr state_pub_;
   rclcpp::Publisher<husky_msgs::msg::GoalEvent>::SharedPtr event_pub_;
-  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_pub_;
   rclcpp::Service<husky_msgs::srv::SetRobotState>::SharedPtr set_state_srv_;
   rclcpp_action::Server<NavigateTo>::SharedPtr action_server_;
   rclcpp::TimerBase::SharedPtr state_timer_;

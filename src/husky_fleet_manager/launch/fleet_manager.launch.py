@@ -16,7 +16,7 @@ def generate_launch_description():
             package='husky_fleet_manager',
             executable='fleet_manager_node',
             name='fleet_manager',
-            parameters=[config_file],
+            parameters=[{'fleet_config': config_file}],
             output='screen'
         )
     ])

@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <mutex>
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
@@ -23,6 +24,17 @@ struct RobotClient {
   rclcpp::Subscription<husky_msgs::msg::RobotState>::SharedPtr state_sub;
   husky_msgs::msg::RobotState latest_state;
   bool state_received = false;
+};
+
+struct ActiveGoal {
+  std::string robot_id;
+  std::shared_future<rclcpp_action::ClientGoalHandle<husky_msgs::action::NavigateTo>::SharedPtr> goal_handle_future;
+  rclcpp_action::ClientGoalHandle<husky_msgs::action::NavigateTo>::SharedPtr goal_handle;
+  std::shared_future<rclcpp_action::ClientGoalHandle<husky_msgs::action::NavigateTo>::WrappedResult> result_future;
+  bool goal_accepted = false;
+  bool result_received = false;
+  bool success = false;
+  std::string message;
 };
 
 class FleetManagerNode : public rclcpp::Node {
@@ -63,6 +75,10 @@ public:
     state_timer_ = create_wall_timer(
       std::chrono::milliseconds(100),
       std::bind(&FleetManagerNode::publishFleetState, this));
+
+    goal_monitor_timer_ = create_wall_timer(
+      std::chrono::milliseconds(100),
+      std::bind(&FleetManagerNode::checkActiveGoals, this));
 
     RCLCPP_INFO(get_logger(), "Fleet manager initialized with %zu robots", robots_.size());
   }
@@ -116,55 +132,144 @@ private:
 
   void handleFleetAccepted(const std::shared_ptr<GoalHandleFleetNavigate> handle) {
     auto goal = handle->get_goal();
-    auto results = std::make_shared<FleetNavigate::Result>();
-    auto feedbacks = std::make_shared<FleetNavigate::Feedback>();
 
-    std::map<std::string, bool> robot_completed;
-    std::map<std::string, bool> robot_success;
-    std::map<std::string, std::string> robot_message;
+    {
+      std::lock_guard<std::mutex> lock(fleet_mutex_);
+      active_fleet_goal_ = handle;
+      fleet_results_ = std::make_shared<FleetNavigate::Result>();
+      active_goals_.clear();
+    }
 
     for (const auto& fleet_goal : goal->goals) {
       const std::string& robot_id = fleet_goal.robot_id;
       if (!robots_.count(robot_id)) {
         RCLCPP_WARN(get_logger(), "Unknown robot: %s", robot_id.c_str());
+        husky_msgs::msg::FleetResult result;
+        result.robot_id = robot_id;
+        result.success = false;
+        result.message = "Unknown robot";
+        std::lock_guard<std::mutex> lock(fleet_mutex_);
+        fleet_results_->results.push_back(result);
         continue;
       }
 
       auto& client = robots_[robot_id];
       if (!client.navigate_client->wait_for_action_server(std::chrono::seconds(5))) {
         RCLCPP_WARN(get_logger(), "Action server not available for %s", robot_id.c_str());
+        husky_msgs::msg::FleetResult result;
+        result.robot_id = robot_id;
+        result.success = false;
+        result.message = "Action server not available";
+        std::lock_guard<std::mutex> lock(fleet_mutex_);
+        fleet_results_->results.push_back(result);
         continue;
       }
 
       auto nav_goal = NavigateTo::Goal();
       nav_goal.target_pose = fleet_goal.target_pose;
 
-      auto goal_handle_future = client.navigate_client->async_send_goal(nav_goal);
+      auto active_goal = std::make_shared<ActiveGoal>();
+      active_goal->robot_id = robot_id;
+      active_goal->goal_handle_future = client.navigate_client->async_send_goal(nav_goal);
 
-      auto result_future = client.navigate_client->async_get_result(goal_handle_future.get());
-      auto result = result_future.get();
+      {
+        std::lock_guard<std::mutex> lock(fleet_mutex_);
+        active_goals_[robot_id] = active_goal;
+      }
+    }
+  }
 
-      husky_msgs::msg::FleetResult fleet_result;
-      fleet_result.robot_id = robot_id;
-      fleet_result.success = (result.code == rclcpp_action::ResultCode::SUCCEEDED);
-      fleet_result.message = fleet_result.success ? "Goal reached" : "Navigation failed";
+  void checkActiveGoals() {
+    std::shared_ptr<GoalHandleFleetNavigate> handle;
+    std::shared_ptr<FleetNavigate::Result> results;
 
-      results->results.push_back(fleet_result);
+    {
+      std::lock_guard<std::mutex> lock(fleet_mutex_);
+      if (!active_fleet_goal_ || active_goals_.empty()) {
+        return;
+      }
+
+      for (auto& [robot_id, active_goal] : active_goals_) {
+        if (active_goal->result_received) {
+          continue;
+        }
+
+        if (!active_goal->goal_accepted) {
+          auto status = active_goal->goal_handle_future.wait_for(std::chrono::milliseconds(0));
+          if (status == std::future_status::ready) {
+            active_goal->goal_handle = active_goal->goal_handle_future.get();
+            if (!active_goal->goal_handle) {
+              active_goal->result_received = true;
+              active_goal->success = false;
+              active_goal->message = "Goal rejected";
+              RCLCPP_WARN(get_logger(), "Goal rejected by %s", robot_id.c_str());
+            } else {
+              active_goal->goal_accepted = true;
+              auto& robot_client = robots_[robot_id];
+              active_goal->result_future = robot_client.navigate_client->async_get_result(active_goal->goal_handle);
+            }
+          }
+        } else {
+          auto status = active_goal->result_future.wait_for(std::chrono::milliseconds(0));
+          if (status == std::future_status::ready) {
+            auto result = active_goal->result_future.get();
+            active_goal->result_received = true;
+            active_goal->success = (result.code == rclcpp_action::ResultCode::SUCCEEDED);
+            active_goal->message = active_goal->success ? "Goal reached" : "Navigation failed";
+          }
+        }
+      }
+
+      bool all_done = true;
+      for (auto& [robot_id, active_goal] : active_goals_) {
+        if (!active_goal->result_received) {
+          all_done = false;
+          break;
+        }
+      }
+
+      if (!all_done) {
+        return;
+      }
+
+      for (auto& [robot_id, active_goal] : active_goals_) {
+        husky_msgs::msg::FleetResult result;
+        result.robot_id = robot_id;
+        result.success = active_goal->success;
+        result.message = active_goal->message;
+        fleet_results_->results.push_back(result);
+      }
+
+      handle = active_fleet_goal_;
+      results = fleet_results_;
+      active_fleet_goal_.reset();
+      active_goals_.clear();
     }
 
-    handle->succeed(results);
+    if (handle) {
+      handle->succeed(results);
+    }
   }
 
   void fleetSetStateCallback(
     const std::shared_ptr<husky_msgs::srv::FleetSetState::Request> request,
     std::shared_ptr<husky_msgs::srv::FleetSetState::Response> response) {
+    auto shared_response = response;
+    auto pending_count = std::make_shared<size_t>(request->robot_ids.size());
+    auto response_mutex = std::make_shared<std::mutex>();
+
     for (const auto& robot_id : request->robot_ids) {
       if (!robots_.count(robot_id)) {
         husky_msgs::msg::FleetResult result;
         result.robot_id = robot_id;
         result.success = false;
         result.message = "Unknown robot";
+        std::lock_guard<std::mutex> lock(*response_mutex);
         response->results.push_back(result);
+        (*pending_count)--;
+        if (*pending_count == 0) {
+          return;
+        }
         continue;
       }
 
@@ -174,7 +279,12 @@ private:
         result.robot_id = robot_id;
         result.success = false;
         result.message = "Service not available";
+        std::lock_guard<std::mutex> lock(*response_mutex);
         response->results.push_back(result);
+        (*pending_count)--;
+        if (*pending_count == 0) {
+          return;
+        }
         continue;
       }
 
@@ -182,14 +292,21 @@ private:
       srv_request->waiting = request->waiting;
       srv_request->avoidance_enabled = request->avoidance_enabled;
 
-      auto future = client.set_state_client->async_send_request(srv_request);
-      auto srv_response = future.get();
-
-      husky_msgs::msg::FleetResult result;
-      result.robot_id = robot_id;
-      result.success = srv_response->success;
-      result.message = srv_response->message;
-      response->results.push_back(result);
+      client.set_state_client->async_send_request(
+        srv_request,
+        [this, robot_id, shared_response, response_mutex, pending_count](
+          rclcpp::Client<husky_msgs::srv::SetRobotState>::SharedFuture future) {
+          auto srv_response = future.get();
+          husky_msgs::msg::FleetResult result;
+          result.robot_id = robot_id;
+          result.success = srv_response->success;
+          result.message = srv_response->message;
+          {
+            std::lock_guard<std::mutex> lock(*response_mutex);
+            shared_response->results.push_back(result);
+            (*pending_count)--;
+          }
+        });
     }
   }
 
@@ -209,12 +326,18 @@ private:
 
   std::map<std::string, RobotClient> robots_;
   std::mutex state_mutex_;
+  std::mutex fleet_mutex_;
 
   rclcpp::Publisher<husky_msgs::msg::FleetState>::SharedPtr fleet_state_pub_;
   rclcpp::Subscription<husky_msgs::msg::GoalEvent>::SharedPtr goal_event_sub_;
   rclcpp_action::Server<FleetNavigate>::SharedPtr fleet_navigate_server_;
   rclcpp::Service<husky_msgs::srv::FleetSetState>::SharedPtr fleet_set_state_server_;
   rclcpp::TimerBase::SharedPtr state_timer_;
+  rclcpp::TimerBase::SharedPtr goal_monitor_timer_;
+
+  std::shared_ptr<GoalHandleFleetNavigate> active_fleet_goal_;
+  std::shared_ptr<FleetNavigate::Result> fleet_results_;
+  std::map<std::string, std::shared_ptr<ActiveGoal>> active_goals_;
 };
 
 int main(int argc, char** argv) {

@@ -2,7 +2,7 @@
 #define HUSKY_BT__STOP_AND_WAIT_HPP_
 
 #include <behaviortree_cpp/action_node.h>
-#include <geometry_msgs/msg/twist.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 class StopAndWait : public BT::SyncActionNode {
@@ -15,7 +15,7 @@ public:
 
 private:
   rclcpp::Node::SharedPtr node_;
-  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_pub_;
 };
 
 #endif
