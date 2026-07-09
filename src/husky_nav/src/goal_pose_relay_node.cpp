@@ -5,7 +5,7 @@ class GoalPoseRelay : public rclcpp::Node {
 public:
   GoalPoseRelay() : Node("goal_pose_relay_node") {
     sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
-      "/goal_pose", 10,
+      "goal_pose", 10,
       [this](geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         pub_->publish(*msg);
       });

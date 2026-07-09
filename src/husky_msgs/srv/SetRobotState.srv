@@ -1,0 +1,6 @@
+# Only the operator-controlled fields are settable via service
+bool waiting
+bool avoidance_enabled
+---
+bool success
+string message

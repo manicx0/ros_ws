@@ -1,15 +1,31 @@
 <root BTCPP_format="4">
   <BehaviorTree ID="PatrolMission">
-    <KeepRunningUntilFailure>
-      <Sequence>
-        <Fallback>
-          <Sequence>
-            <ObstacleCheck/>
-            <NavigateToGoal goal="1.0,2.0,0.0"/>
-          </Sequence>
-          <RecoveryRotate/>
-        </Fallback>
-      </Sequence>
-    </KeepRunningUntilFailure>
+    <Sequence>
+      <!-- 1. Emergency stop check — highest priority -->
+      <EmergencyStopCondition/>
+
+      <!-- 2. Waiting gate — LLM-imposed pause -->
+      <WaitingCondition/>
+
+      <!-- 3. Idle check — no goal in queue -->
+      <IdleMonitor/>
+
+      <!-- 4. Mission loop -->
+      <KeepRunningUntilFailure>
+        <Sequence>
+          <!-- Obstacle handling: safe → navigate, blocked → stop -->
+          <Fallback>
+            <Sequence>
+              <AvoidanceEnabledCondition/>
+              <ObstacleCheck/>
+            </Sequence>
+            <StopAndWait/>
+          </Fallback>
+
+          <!-- Navigation execution -->
+          <NavigateToGoal goal="{target_pose}"/>
+        </Sequence>
+      </KeepRunningUntilFailure>
+    </Sequence>
   </BehaviorTree>
 </root>
