@@ -6,3 +6,6 @@ log/
 # Explicitly ignore ONLY these two upstream folders inside src
 src/clearpath_common/
 src/clearpath_gz/
+
+# Agent instruction file (generated content, not part of source)
+AGENTS.md
