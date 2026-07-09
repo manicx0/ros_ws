@@ -9,8 +9,13 @@ find_package(action_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RobotState.msg"
   "msg/GoalEvent.msg"
+  "msg/FleetState.msg"
+  "msg/FleetGoal.msg"
+  "msg/FleetResult.msg"
   "srv/SetRobotState.srv"
+  "srv/FleetSetState.srv"
   "action/NavigateTo.action"
+  "action/FleetNavigate.action"
   DEPENDENCIES geometry_msgs
 )
 

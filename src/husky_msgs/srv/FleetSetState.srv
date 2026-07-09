@@ -1,0 +1,5 @@
+string[] robot_ids
+bool waiting
+bool avoidance_enabled
+---
+husky_msgs/FleetResult[] results

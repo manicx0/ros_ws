@@ -1,0 +1,5 @@
+husky_msgs/FleetGoal[] goals
+---
+husky_msgs/FleetResult[] results
+---
+husky_msgs/FleetResult[] feedbacks

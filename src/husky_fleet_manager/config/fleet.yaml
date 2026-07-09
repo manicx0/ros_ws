@@ -1,0 +1,5 @@
+fleet_manager:
+  robots:
+    - namespace: cpr_a200_0000
+    - namespace: cpr_a200_0001
+    - namespace: cpr_a200_0002
