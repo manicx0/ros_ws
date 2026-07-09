@@ -2,11 +2,111 @@
 
 Custom navigation stack (no Nav2) for Clearpath Husky A200 with VLP-16 lidar, using pure pursuit, obstacle detection, path planning, and BehaviorTree.CPP mission execution.
 
+## Architecture
+
+### Nodes
+
+| Node | Package | Purpose |
+|------|---------|---------|
+| `robot_state_publisher` | `robot_state_publisher` | Publishes joint transforms from URDF |
+| `gz_ros_control` | `gz_ros2_control` (Gazebo plugin) | Bridge Gazebo physics → ros2_control |
+| `controller_manager` | `controller_manager` (loaded by gz_ros_control) | Manages lifecycle of controllers |
+| `joint_state_broadcaster` | `controller_manager` (spawner) | Publishes wheel joint positions/velocities |
+| `platform_velocity_controller` | `diff_drive_controller` (spawner) | Receives Twist → applies to wheel joints |
+| `ekf_node` | `robot_localization` | Fuses wheel odom + IMU into filtered odom |
+| `lidar3d_0_gz_bridge` | `ros_gz_bridge` | Bridges Gazebo lidar scan → ROS topics |
+| `cmd_vel_bridge` | `ros_gz_bridge` | Bridges ROS cmd_vel → Gazebo Twist |
+| `odom_base_tf_bridge` | `ros_gz_bridge` | Bridges Gazebo TF → ROS tf |
+| `pure_pursuit` | `husky_nav` | Follows planned path via cmd_vel |
+| `path_planner` | `husky_nav` | Plans path from current pose to goal |
+| `obstacle_detector` | `husky_nav` | Detects obstacles in lidar point cloud |
+| `ekf_gps` | `husky_nav` | GPS → odometry fusion (expansion) |
+| `mission_executor` | `husky_bt` | Runs behavior tree XML for autonomous patrol |
+| `twist_mux` | `twist_mux` | Multiplexes cmd_vel from multiple sources |
+| `teleop_twist_joy` | `teleop_twist_joy` | Joystick → cmd_vel |
+
+### Topics (under `cpr_a200_0000/`)
+
+**Input:**
+| Topic | Type | Publisher |
+|-------|------|-----------|
+| `cmd_vel` | `TwistStamped` | teleop_keyboard, pure_pursuit, twist_marker_server |
+| `goal_waypoints` | `PoseStamped` | mission_executor, user CLI |
+
+**Sensor:**
+| Topic | Type | Publisher |
+|-------|------|-----------|
+| `velodyne_points` | `PointCloud2` | lidar bridge (3D full) |
+| `scan_2d` | `LaserScan` | lidar bridge (2D projection) |
+| `sensors/lidar3d_0/scan` | `LaserScan` | lidar bridge (raw) |
+| `sensors/lidar3d_0/points` | `PointCloud2` | lidar bridge (raw) |
+
+**State / Odometry:**
+| Topic | Type | Publisher |
+|-------|------|-----------|
+| `platform/joint_states` | `JointState` | joint_state_broadcaster |
+| `platform/odom` | `Odometry` | platform_velocity_controller |
+| `odometry/filtered` | `Odometry` | ekf_node |
+| `tf` | `TFMessage` | robot_state_publisher + ekf_node |
+| `tf_static` | `TFMessage` | robot_state_publisher |
+
+**Plan:**
+| Topic | Type | Publisher |
+|-------|------|-----------|
+| `global_path` | `Path` | path_planner_node |
+
+**Processed:**
+| Topic | Type | Publisher |
+|-------|------|-----------|
+| `filtered_cloud` | `PointCloud2` | obstacle_detector_node |
+
+### Data Flow
+
+```
+                    Gazebo World
+                         │
+              gz_ros_control (plugin in URDF)
+                         │
+                 controller_manager
+                    │     │      │
+       joint_state  │     │      │  platform_velocity_controller
+       _broadcaster │     │      │  ─→ /platform/odom
+       ─→ /platform/│     │      │  ←─ /platform/cmd_vel
+         joint_states│     │      │
+                    │     │      │
+              robot_state  cmd_vel_bridge ←── twist_mux ←── pure_pursuit
+              _publisher  (ROS↔Gazebo)              ↑      path_planner
+              ─→ /tf                              teleop    obstacle_detector
+                                                    │
+                                             mission_executor (BT)
+                                             ─→ /goal_waypoints
+
+                    ekf_node ←── /platform/odom
+                    ─→ /odometry/filtered
+                    ─→ odom→base_link (tf)
+
+                    obstacle_detector ←── /velodyne_points
+                    ─→ /filtered_cloud
+```
+
+### Repo Layout
+
+```
+src/
+  clearpath_common/   — upstream (gitignored, installed at /opt/ros/jazzy)
+  clearpath_gz/        — upstream (gitignored, installed at /opt/ros/jazzy)
+  husky_bringup/       — launch files, configs, worlds, RViz config
+  husky_bt/            — BehaviorTree.CPP mission executor + BT node plugins
+  husky_nav/           — pure_pursuit, path_planner, obstacle_detector, ekf_gps (C++)
+```
+
+All C++ topic strings use relative paths (no leading `/`) to inherit namespace from `PushRosNamespace`.
+
 ## Quick Start
 
 ### Prerequisites
 
-The robot configuration lives at `/root/clearpath/robot.yaml`. It must have:
+Robot config at `/root/clearpath/robot.yaml`:
 
 ```yaml
 system:
@@ -24,17 +124,9 @@ sensors:
       parent: top_chassis_link    # NOT top_plate_link (doesn't exist in A200 URDF)
       xyz: [0.0, 0.0, 0.12]
       rpy: [0.0, 0.0, 0.0]
-      ros_parameters:
-        velodyne_driver_node:
-          model: VLP16
-          frame_id: lidar3d_0_laser
-          device_ip: 192.168.131.25
-          port: 2368
-        velodyne_transform_node:
-          model: VLP16
-          fixed_frame: lidar3d_0_laser
-          target_frame: lidar3d_0_laser
 ```
+
+All commands need `source install/setup.bash` first.
 
 ### Terminal 1: Gazebo + Robot
 
@@ -43,27 +135,27 @@ source install/setup.bash
 ros2 launch husky_bringup sim.launch.py
 ```
 
-Wait for the robot to appear in the Gazebo entity tree (chassis, 4 wheels, lidar visible). Controllers will self-configure within ~30s.
+Wait for robot entity in Gazebo. Controllers self-configure within ~30s.
 
-### Terminal 2: Navigation Stack
+### Terminal 2: Navigation stack
 
 ```bash
 source install/setup.bash
 ros2 launch husky_bringup nav.launch.py namespace:=cpr_a200_0000
 ```
 
-Starts pure pursuit controller, path planner, obstacle detector, and EKF.
+Starts pure_pursuit, path_planner, obstacle_detector, EKF.
 
-### Terminal 3: RViz Visualization
+### Terminal 3: RViz
 
 ```bash
 source install/setup.bash
 ros2 launch husky_bringup rviz.launch.py namespace:=cpr_a200_0000
 ```
 
-Displays robot model, TF, point cloud, planned path, and odometry.
+Robot model, TF, point cloud, path, odometry. Separate file so RViz doesn't die when sim restarts.
 
-### Terminal 4: Manual Teleop
+### Terminal 4: Teleop (requires real TTY)
 
 ```bash
 source install/setup.bash
@@ -71,9 +163,7 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard \
   --ros-args -r /cmd_vel:=/cpr_a200_0000/cmd_vel
 ```
 
-Use keyboard to drive the robot (i/j/k/l keys).
-
-### Terminal 5: Send Autonomous Goal
+### Terminal 5: Autonomous goal
 
 ```bash
 source install/setup.bash
@@ -81,44 +171,48 @@ ros2 topic pub --once /cpr_a200_0000/goal_waypoints geometry_msgs/msg/PoseStampe
   '{header: {frame_id: "odom"}, pose: {position: {x: 8.0, y: 5.0, z: 0.0}, orientation: {w: 1.0}}}'
 ```
 
-### Terminal 6: Mission Execution (BehaviorTree)
+### Terminal 6: BehaviorTree mission
 
 ```bash
 source install/setup.bash
 ros2 launch husky_bringup mission.launch.py namespace:=cpr_a200_0000 bt_file:=patrol_mission.xml
 ```
 
+## Namespaces
+
+All nodes run under `cpr_a200_0000/` namespace. Topics are scoped to the robot, enabling future multi-robot use — adding a second Husky is just a different namespace.
+
 ## Troubleshooting
 
 ### Robot not visible in Gazebo
 
-Check the generation pipeline:
+Check generation pipeline:
 
 ```bash
 source install/setup.bash
 ros2 run clearpath_generator_common generate_description -s /root/clearpath/
-ros2 run clearpath_generator_common generate_semantic_description -s /root/clearpath/
+ros2 run clearpath_generator_common generate_semantic_description -s /root/clearpath/  # catches missing links
 ros2 run clearpath_generator_gz generate_launch -s /root/clearpath/
 ros2 run clearpath_generator_gz generate_param -s /root/clearpath/
 ```
 
-If `generate_semantic_description` fails with "parent link not found", check `robot.yaml` sensor `parent:` field — A200 URDF uses `top_chassis_link`, not `top_plate_link`.
+If "parent link not found" → A200 URDF defines `top_chassis_link`, not `top_plate_link`.
 
 ### Controllers fail to configure
 
-The spawners have a 60s timeout. If they still fail, check:
+Spawners retry for 60s. Check:
 
 ```bash
 ros2 control list_controllers
 ros2 control list_hardware_components
 ```
 
-Ensure the URDF uses `gz_ros2_control/GazeboSimSystem` (for simulation) not `clearpath_hardware_interfaces/A200Hardware`. Run `xacro robot.urdf.xacro is_sim:=true` to verify.
-
-### Teleop crashes
-
+Normal output:
 ```
-termios.error: (25, 'Inappropriate ioctl for device')
+[spawner-*] Configured and activated joint_state_broadcaster
+[spawner-*] Configured and activated platform_velocity_controller
 ```
 
-This is a non-TTY environment issue. Run `teleop_twist_keyboard` in a **real terminal window**, not through a script or headless session.
+### Teleop crashes with `termios.error`
+
+Non-TTY environment — run in a real terminal window, not headless/script.
