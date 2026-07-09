@@ -178,6 +178,22 @@ source install/setup.bash
 ros2 launch husky_bringup mission.launch.py namespace:=cpr_a200_0000 bt_file:=patrol_mission.xml
 ```
 
+### Switching back to teleop after autonomous navigation
+
+Stop the current goal and regain manual control:
+
+```bash
+# 1. Cancel the goal (keeps all nodes running)
+ros2 topic pub --once /cpr_a200_0000/goal_waypoints geometry_msgs/msg/PoseStamped \
+  '{header: {frame_id: "odom"}, pose: {position: {x: 0.0, y: 0.0, z: 0.0}, orientation: {w: 1.0}}}'
+
+# 2. Zero out residual velocity
+ros2 topic pub --once /cpr_a200_0000/cmd_vel geometry_msgs/msg/TwistStamped \
+  '{twist: {linear: {x: 0.0}, angular: {z: 0.0}}}'
+```
+
+Teleop keyboard (Terminal 4) now has priority via twist_mux. Alternatively, Ctrl+C the mission executor (Terminal 6) to stop autonomous goals entirely.
+
 ## Namespaces
 
 All nodes run under `cpr_a200_0000/` namespace. Topics are scoped to the robot, enabling future multi-robot use — adding a second Husky is just a different namespace.
