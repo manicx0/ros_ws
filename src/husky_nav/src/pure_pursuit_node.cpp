@@ -1,6 +1,6 @@
 #include <functional>
 #include "rclcpp/rclcpp.hpp"
-#include "geometry_msgs/msg/twist.hpp"
+#include "geometry_msgs/msg/twist_stamped.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
@@ -24,7 +24,7 @@ public:
     path_sub_ = this->create_subscription<nav_msgs::msg::Path>(
       "global_path", 10, std::bind(&PurePursuitNode::pathCallback, this, std::placeholders::_1));
 
-    cmd_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
+    cmd_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", 10);
     
     // Timer loop for tracking execution
     timer_ = this->create_wall_timer(
@@ -61,9 +61,10 @@ private:
     double local_y = -dx * sin(robot_pose_.theta) + dy * cos(robot_pose_.theta);
     double curvature = 2.0 * local_y / (lookahead_dist_ * lookahead_dist_);
     
-    geometry_msgs::msg::Twist cmd;
-    cmd.linear.x  = linear_speed_;
-    cmd.angular.z = linear_speed_ * curvature; 
+    geometry_msgs::msg::TwistStamped cmd;
+    cmd.header.stamp = this->now();
+    cmd.twist.linear.x  = linear_speed_;
+    cmd.twist.angular.z = linear_speed_ * curvature; 
     cmd_pub_->publish(cmd);
   }
 
@@ -74,7 +75,7 @@ private:
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
-  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 

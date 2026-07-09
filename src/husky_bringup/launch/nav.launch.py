@@ -50,6 +50,14 @@ def generate_launch_description():
             output='screen',
             parameters=[{'use_sim_time': use_sim_time}],
         ),
+
+        Node(
+            package='husky_nav',
+            executable='goal_pose_relay_node',
+            name='goal_pose_relay',
+            output='screen',
+            parameters=[{'use_sim_time': use_sim_time}],
+        ),
     ])
 
     return LaunchDescription([

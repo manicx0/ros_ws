@@ -21,6 +21,7 @@ Custom navigation stack (no Nav2) for Clearpath Husky A200 with VLP-16 lidar, us
 | `path_planner` | `husky_nav` | Plans path from current pose to goal |
 | `obstacle_detector` | `husky_nav` | Detects obstacles in lidar point cloud |
 | `ekf_gps` | `husky_nav` | GPS → odometry fusion (expansion) |
+| `goal_pose_relay` | `husky_nav` | Relays RViz 2D Nav Goal → goal_waypoints |
 | `mission_executor` | `husky_bt` | Runs behavior tree XML for autonomous patrol |
 | `twist_mux` | `twist_mux` | Multiplexes cmd_vel from multiple sources |
 | `teleop_twist_joy` | `teleop_twist_joy` | Joystick → cmd_vel |
@@ -31,7 +32,8 @@ Custom navigation stack (no Nav2) for Clearpath Husky A200 with VLP-16 lidar, us
 | Topic | Type | Publisher |
 |-------|------|-----------|
 | `cmd_vel` | `TwistStamped` | teleop_keyboard, pure_pursuit, twist_marker_server |
-| `goal_waypoints` | `PoseStamped` | mission_executor, user CLI |
+| `goal_waypoints` | `PoseStamped` | mission_executor, goal_pose_relay, user CLI |
+| `/goal_pose` | `PoseStamped` | RViz 2D Nav Goal tool (global, not namespaced) |
 
 **Sensor:**
 | Topic | Type | Publisher |
@@ -164,6 +166,12 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard \
 ```
 
 ### Terminal 5: Autonomous goal
+
+**Option A: RViz 2D Nav Goal (recommended)**
+
+In RViz, click the **"2D Nav Goal"** button in the toolbar, then click anywhere in the scene. The robot drives there. The `goal_pose_relay` node bridges RViz's `/goal_pose` topic to the navigation stack's `goal_waypoints` topic.
+
+**Option B: CLI command**
 
 ```bash
 source install/setup.bash

@@ -35,12 +35,17 @@ ament_target_dependencies(path_planner_node rclcpp geometry_msgs nav_msgs)
 add_executable(ekf_gps_node src/ekf_gps_node.cpp)
 ament_target_dependencies(ekf_gps_node rclcpp)
 
+# 5. Goal Pose Relay Node
+add_executable(goal_pose_relay_node src/goal_pose_relay_node.cpp)
+ament_target_dependencies(goal_pose_relay_node rclcpp geometry_msgs)
+
 # Install targets
 install(TARGETS
   pure_pursuit_node
   obstacle_detector_node
   path_planner_node
   ekf_gps_node
+  goal_pose_relay_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
