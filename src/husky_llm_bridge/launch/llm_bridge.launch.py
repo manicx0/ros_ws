@@ -1,14 +1,61 @@
 import os
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
-    return LaunchDescription([
-        Node(
-            package='husky_llm_bridge',
-            executable='llm_bridge_node.py',
-            name='llm_bridge',
-            output='screen'
+    connector_arg = DeclareLaunchArgument(
+        'connector',
+        default_value='gemini_connector_node.py',
+        description='Which LLM connector to launch: gemini_connector_node.py or ollama_connector_node.py'
+    )
+
+    fleet_config_path = os.path.join(
+        get_package_share_directory('husky_fleet_manager'),
+        'config',
+        'fleet.yaml'
+    )
+
+    bridge_node = Node(
+        package='husky_llm_bridge',
+        executable='llm_bridge_node.py',
+        name='llm_bridge',
+        output='screen'
+    )
+
+    validator_node = Node(
+        package='husky_llm_bridge',
+        executable='llm_validator_node.py',
+        name='llm_validator',
+        output='screen',
+        parameters=[{'fleet_config_path': fleet_config_path}]
+    )
+
+    connector_node = Node(
+        package='husky_llm_bridge',
+        executable=LaunchConfiguration('connector'),
+        name='llm_connector',
+        output='screen'
+    )
+
+    fleet_manager_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('husky_fleet_manager'),
+                'launch',
+                'fleet_manager.launch.py'
+            )
         )
+    )
+
+    return LaunchDescription([
+        connector_arg,
+        fleet_manager_launch,
+        bridge_node,
+        validator_node,
+        connector_node,
     ])

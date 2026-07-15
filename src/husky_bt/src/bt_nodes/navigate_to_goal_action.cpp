@@ -14,7 +14,7 @@ public:
       cmd_pub_ = node_->create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", 10);
       event_pub_ = node_->create_publisher<husky_msgs::msg::GoalEvent>("/fleet/goal_events", 10);
       odom_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
-        "odometry/filtered", 10,
+        "platform/odom/filtered", 10,
         std::bind(&NavigateToGoal::odomCallback, this, std::placeholders::_1));
     }
 

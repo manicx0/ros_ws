@@ -12,7 +12,7 @@ public:
       "goal_waypoints", 10, std::bind(&PathPlannerNode::goalCallback, this, std::placeholders::_1));
       
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-      "odometry/filtered", 10, std::bind(&PathPlannerNode::odomCallback, this, std::placeholders::_1));
+      "platform/odom/filtered", 10, std::bind(&PathPlannerNode::odomCallback, this, std::placeholders::_1));
 
     path_pub_ = this->create_publisher<nav_msgs::msg::Path>("global_path", 10);
   }

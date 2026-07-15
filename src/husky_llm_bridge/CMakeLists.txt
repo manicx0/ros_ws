@@ -8,6 +8,9 @@ ament_python_install_package(husky_llm_bridge)
 
 install(PROGRAMS
   husky_llm_bridge/llm_bridge_node.py
+  husky_llm_bridge/llm_validator_node.py
+  husky_llm_bridge/gemini_connector_node.py
+  husky_llm_bridge/ollama_connector_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

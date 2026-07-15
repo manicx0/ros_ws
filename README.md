@@ -162,7 +162,7 @@ Robot model, TF, point cloud, path, odometry. Separate file so RViz doesn't die 
 ```bash
 source install/setup.bash
 ros2 run teleop_twist_keyboard teleop_twist_keyboard \
-  --ros-args -r /cmd_vel:=/cpr_a200_0000/cmd_vel
+  --ros-args -p stamped:=True -r /cmd_vel:=/cpr_a200_0000/cmd_vel
 ```
 
 ### Terminal 5: Autonomous goal
