@@ -18,6 +18,7 @@ class GeminiConnectorNode(Node):
         self.declare_parameter('model', 'gemini-3.5-flash')
 
         self.api_key = self.get_parameter('api_key').value or os.environ.get('GEMINI_API_KEY', '')
+        self.api_key_from_env = not self.api_key
         self.model = self.get_parameter('model').value
 
         if not self.api_key:
@@ -41,6 +42,7 @@ class GeminiConnectorNode(Node):
         self.status_pub = self.create_publisher(String, '/llm/decision_status', 10)
 
         self.latest_fleet_state = None
+        self.last_command = None
         self.get_logger().info(f'Gemini connector initialized. Model: {self.model}')
 
     def fleet_state_callback(self, msg: FleetState):
@@ -48,7 +50,13 @@ class GeminiConnectorNode(Node):
 
     def command_callback(self, msg: String):
         command = msg.data
+        if command == self.last_command:
+            return
         self.get_logger().info(f'Received command: {command}')
+        self.last_command = command
+
+        if self.api_key_from_env:
+            self.api_key = os.environ.get('GEMINI_API_KEY', '')
 
         if not self.api_key:
             self._publish_status('No GEMINI_API_KEY configured')

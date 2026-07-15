@@ -177,6 +177,20 @@ private:
         active_goals_[robot_id] = active_goal;
       }
     }
+
+    std::shared_ptr<GoalHandleFleetNavigate> handle_to_abort;
+    std::shared_ptr<FleetNavigate::Result> results_to_abort;
+    {
+      std::lock_guard<std::mutex> lock(fleet_mutex_);
+      if (active_goals_.empty()) {
+        handle_to_abort = handle;
+        results_to_abort = fleet_results_;
+        active_fleet_goal_.reset();
+      }
+    }
+    if (handle_to_abort) {
+      handle_to_abort->abort(results_to_abort);
+    }
   }
 
   void checkActiveGoals() {

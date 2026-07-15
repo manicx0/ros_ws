@@ -37,6 +37,7 @@ class OllamaConnectorNode(Node):
         self.status_pub = self.create_publisher(String, '/llm/decision_status', 10)
 
         self.latest_fleet_state = None
+        self.last_command = None
         self.get_logger().info(f'Ollama connector initialized. URL: {self.ollama_url}, Model: {self.model}')
 
     def fleet_state_callback(self, msg: FleetState):
@@ -44,7 +45,10 @@ class OllamaConnectorNode(Node):
 
     def command_callback(self, msg: String):
         command = msg.data
+        if command == self.last_command:
+            return
         self.get_logger().info(f'Received command: {command}')
+        self.last_command = command
 
         fleet_state_json = format_fleet_state(self.latest_fleet_state)
         prompt = self._build_prompt(command, fleet_state_json)

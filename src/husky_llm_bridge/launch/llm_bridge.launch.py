@@ -1,6 +1,7 @@
 import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -12,6 +13,12 @@ def generate_launch_description():
         'connector',
         default_value='gemini_connector_node.py',
         description='Which LLM connector to launch: gemini_connector_node.py or ollama_connector_node.py'
+    )
+
+    include_fleet_manager_arg = DeclareLaunchArgument(
+        'include_fleet_manager',
+        default_value='true',
+        description='Whether to include the fleet manager node'
     )
 
     fleet_config_path = os.path.join(
@@ -49,11 +56,13 @@ def generate_launch_description():
                 'launch',
                 'fleet_manager.launch.py'
             )
-        )
+        ),
+        condition=IfCondition(LaunchConfiguration('include_fleet_manager'))
     )
 
     return LaunchDescription([
         connector_arg,
+        include_fleet_manager_arg,
         fleet_manager_launch,
         bridge_node,
         validator_node,

@@ -9,3 +9,6 @@ src/clearpath_gz/
 
 # Agent instruction file (generated content, not part of source)
 AGENTS.md
+
+# Understand-anything knowledge graph data
+.ua/

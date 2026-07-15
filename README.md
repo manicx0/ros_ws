@@ -104,6 +104,25 @@ src/
 
 All C++ topic strings use relative paths (no leading `/`) to inherit namespace from `PushRosNamespace`.
 
+## Launch Commands
+
+All commands require `source install/setup.bash` first.
+
+| Terminal | Command | Purpose |
+|----------|---------|---------|
+| 1 | `ros2 launch husky_bringup sim.launch.py` | Gazebo simulation + robot spawn |
+| 2 | `ros2 launch husky_bringup nav.launch.py namespace:=cpr_a200_0000` | Navigation stack (pure pursuit, path planner, obstacle detector, EKF) |
+| 3 | `ros2 launch husky_bringup rviz.launch.py namespace:=cpr_a200_0000` | RViz visualization |
+| 4 | `ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -p stamped:=True -r /cmd_vel:=/cpr_a200_0000/cmd_vel` | Manual keyboard control |
+| 5 | `ros2 launch husky_bringup mission.launch.py namespace:=cpr_a200_0000 bt_file:=patrol_mission.xml` | Autonomous BT mission |
+
+**LLM Fleet Pipeline** (alternative to terminals 4-5):
+
+| Terminal | Command | Purpose |
+|----------|---------|---------|
+| 4 | `ros2 launch husky_llm_bridge llm_bridge.launch.py` | Fleet manager + LLM bridge |
+| 5 | `husky` | Interactive LLM command CLI |
+
 ## Quick Start
 
 ### Prerequisites
@@ -179,14 +198,47 @@ ros2 topic pub --once /cpr_a200_0000/goal_waypoints geometry_msgs/msg/PoseStampe
   '{header: {frame_id: "odom"}, pose: {position: {x: 8.0, y: 5.0, z: 0.0}, orientation: {w: 1.0}}}'
 ```
 
-### Terminal 6: BehaviorTree mission
+### Terminal 5: BehaviorTree mission
 
 ```bash
 source install/setup.bash
 ros2 launch husky_bringup mission.launch.py namespace:=cpr_a200_0000 bt_file:=patrol_mission.xml
 ```
 
-### Switching back to teleop after autonomous navigation
+### Terminal 6: LLM Fleet Pipeline
+
+```bash
+export GEMINI_API_KEY="your-key-here"
+source install/setup.bash
+ros2 launch husky_llm_bridge llm_bridge.launch.py
+```
+
+Then use the CLI to send commands:
+
+```bash
+husky
+```
+
+Interactive REPL:
+```
+husky> send robot to x=3,y=0
+[Sent] send robot to x=3,y=0
+
+husky> status
+cpr_a200_0000: IDLE
+
+husky> help
+Commands:
+  <text>    Send command to LLM (e.g., "send robot to x=3,y=0")
+  status    Show current fleet state
+  help      Show this help
+  clear     Clear screen
+  quit      Exit CLI
+
+husky> quit
+```
+
+### Autonomous goal
 
 Stop the current goal and regain manual control:
 
@@ -200,11 +252,92 @@ ros2 topic pub --once /cpr_a200_0000/cmd_vel geometry_msgs/msg/TwistStamped \
   '{twist: {linear: {x: 0.0}, angular: {z: 0.0}}}'
 ```
 
-Teleop keyboard (Terminal 4) now has priority via twist_mux. Alternatively, Ctrl+C the mission executor (Terminal 6) to stop autonomous goals entirely.
+Teleop keyboard (Terminal 4) now has priority via twist_mux. Alternatively, Ctrl+C the mission executor (Terminal 5) to stop autonomous goals entirely.
 
 ## Namespaces
 
 All nodes run under `cpr_a200_0000/` namespace. Topics are scoped to the robot, enabling future multi-robot use — adding a second Husky is just a different namespace.
+
+## LLM Fleet Pipeline
+
+### Prerequisites
+
+Set API key before launching the bridge:
+
+```bash
+export GEMINI_API_KEY="your-key-here"
+```
+
+Or add to `~/.bashrc` for persistence:
+
+```bash
+echo 'export GEMINI_API_KEY="your-key-here"' >> ~/.bashrc
+```
+
+### Debugging
+
+Run in any terminal after sending a command:
+
+| Check | Command |
+|-------|---------|
+| Raw Gemini output | `ros2 topic echo /llm/raw_decision` |
+| Validation result | `ros2 topic echo /llm/decision_status` |
+| Goal events | `ros2 topic echo /fleet/goal_events` |
+| Fleet states | `ros2 topic echo /fleet/robot_states` |
+| Robot state | `ros2 topic echo /cpr_a200_0000/robot_state` |
+| Velocity commands | `ros2 topic echo /cpr_a200_0000/cmd_vel` |
+
+### Bypass LLM (test bridge directly)
+
+```bash
+ros2 topic pub --once /llm/decision std_msgs/String \
+  'data: "{\"missions\":[{\"action\":\"navigate\",\"robot_id\":\"cpr_a200_0000\",\"waypoints\":[{\"x\":2.0,\"y\":0.0}],\"priority\":3}]}"'
+```
+
+### Common Issues
+
+#### No API Key
+
+**Symptom:**
+```
+[WARN] [gemini_connector_node.py-4]: Status: No GEMINI_API_KEY configured
+```
+
+**Solution:**
+```bash
+export GEMINI_API_KEY="your-key"
+# Then restart the LLM bridge terminal
+```
+
+#### Action Server Not Available
+
+**Symptom:**
+```
+[WARN] [fleet_manager_node-1]: Action server not available for cpr_a200_0000
+```
+
+**Cause:** The mission executor (Terminal 5) isn't running or hasn't started yet.
+
+**Solution:** Ensure Terminal 5 is running before sending commands.
+
+#### Validation Errors
+
+The validator rejects invalid data. Examples:
+
+**Invalid robot_id:**
+```
+[llm_validator_node.py-3]: Validation failed: Mission[0]: robot_id "invalid_robot" not in fleet config
+```
+
+**Missing waypoints:**
+```
+[llm_validator_node.py-3]: Validation failed: Mission[0]: navigate action must have waypoints
+```
+
+**Invalid priority:**
+```
+[llm_validator_node.py-3]: Validation failed: Mission[0]: priority must be 1-5
+```
 
 ## Troubleshooting
 
