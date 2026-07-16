@@ -57,6 +57,7 @@ def generate_launch_description():
             ('y', LaunchConfiguration('y')),
             ('z', LaunchConfiguration('z')),
             ('yaw', LaunchConfiguration('yaw')),
+            ('generate', 'false'),
         ])
 
     use_sim_time_arg = DeclareLaunchArgument(

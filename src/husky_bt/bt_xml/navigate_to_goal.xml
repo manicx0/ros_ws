@@ -7,10 +7,26 @@
       <!-- 2. Waiting gate — LLM-imposed pause -->
       <WaitingCondition/>
 
-      <!-- 3. Idle check — no goal in queue -->
+      <!-- 3. GPS fix check — halt if GPS lost -->
+      <GpsFixCheck/>
+
+      <!-- 4. Idle check — no goal in queue -->
       <IdleMonitor/>
 
-      <!-- 4. Obstacle handling: safe → navigate, blocked → stop -->
+      <!-- 5. Stuck handling: reverse, rotate, then check if still stuck -->
+      <Fallback>
+        <StuckCheck/>
+        <Fallback>
+          <Sequence>
+            <RecoveryReverse/>
+            <RecoveryRotate/>
+            <StuckCheck/>
+          </Sequence>
+          <RecoveryFailed/>
+        </Fallback>
+      </Fallback>
+
+      <!-- 6. Obstacle handling: safe → navigate, blocked → stop -->
       <Fallback>
         <Sequence>
           <AvoidanceEnabledCondition/>
@@ -19,7 +35,7 @@
         <StopAndWait/>
       </Fallback>
 
-      <!-- 5. Navigation execution -->
+      <!-- 7. Navigation execution -->
       <NavigateToGoal goal="{target_pose}"/>
     </Sequence>
   </BehaviorTree>

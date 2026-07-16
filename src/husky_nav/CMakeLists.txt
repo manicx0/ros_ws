@@ -10,6 +10,8 @@ find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(husky_msgs REQUIRED)
 find_package(robot_localization REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters segmentation)
@@ -20,7 +22,7 @@ include_directories(include)
 
 # 1. Pure Pursuit Node
 add_executable(pure_pursuit_node src/pure_pursuit_node.cpp)
-ament_target_dependencies(pure_pursuit_node rclcpp geometry_msgs nav_msgs tf2 tf2_geometry_msgs)
+ament_target_dependencies(pure_pursuit_node rclcpp geometry_msgs nav_msgs sensor_msgs std_msgs tf2 tf2_geometry_msgs)
 
 # 2. Obstacle Detector Node
 add_executable(obstacle_detector_node src/obstacle_detector_node.cpp)
@@ -39,6 +41,10 @@ ament_target_dependencies(ekf_gps_node rclcpp)
 add_executable(goal_pose_relay_node src/goal_pose_relay_node.cpp)
 ament_target_dependencies(goal_pose_relay_node rclcpp geometry_msgs)
 
+# 6. Stuck Detector Node
+add_executable(stuck_detector_node src/stuck_detector_node.cpp)
+ament_target_dependencies(stuck_detector_node rclcpp geometry_msgs nav_msgs std_msgs husky_msgs)
+
 # Install targets
 install(TARGETS
   pure_pursuit_node
@@ -46,6 +52,7 @@ install(TARGETS
   path_planner_node
   ekf_gps_node
   goal_pose_relay_node
+  stuck_detector_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -10,6 +10,7 @@
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>husky_msgs</depend>
   <depend>robot_localization</depend>
   <depend>pcl_conversions</depend>
   <depend>tf2</depend>

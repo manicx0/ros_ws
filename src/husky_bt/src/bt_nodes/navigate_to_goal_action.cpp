@@ -27,6 +27,7 @@ public:
     getInput("goal", goal_);
     goal_pub_->publish(goal_);
     obstacle_detected_ = false;
+    config().blackboard->set<bool>("goal_reached", false);
     config().blackboard->set<bool>("mission_active", true);
     return BT::NodeStatus::RUNNING;
   }

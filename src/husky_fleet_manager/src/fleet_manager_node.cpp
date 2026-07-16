@@ -24,6 +24,9 @@ struct RobotClient {
   rclcpp::Subscription<husky_msgs::msg::RobotState>::SharedPtr state_sub;
   husky_msgs::msg::RobotState latest_state;
   bool state_received = false;
+  double home_x = 0.0;
+  double home_y = 0.0;
+  double home_yaw = 0.0;
 };
 
 struct ActiveGoal {
@@ -95,6 +98,14 @@ private:
       std::string ns = robot["namespace"].as<std::string>();
       RobotClient client;
       client.namespace_ = ns;
+
+      if (robot["home_pose"]) {
+        client.home_x = robot["home_pose"]["x"].as<double>(0.0);
+        client.home_y = robot["home_pose"]["y"].as<double>(0.0);
+        client.home_yaw = robot["home_pose"]["yaw"].as<double>(0.0);
+        RCLCPP_INFO(get_logger(), "Robot %s home pose: (%.2f, %.2f, %.2f)", 
+                    ns.c_str(), client.home_x, client.home_y, client.home_yaw);
+      }
 
       client.set_state_client = create_client<husky_msgs::srv::SetRobotState>(
         "/" + ns + "/set_robot_state");

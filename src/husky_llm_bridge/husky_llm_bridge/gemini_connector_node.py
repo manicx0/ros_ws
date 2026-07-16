@@ -3,11 +3,13 @@ import json
 import os
 import urllib.request
 import urllib.error
+import yaml
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 from husky_msgs.msg import FleetState
 from husky_llm_bridge.fleet_state_util import format_fleet_state
+from husky_llm_bridge.waypoint_loader import WaypointLoader
 
 
 class GeminiConnectorNode(Node):
@@ -16,10 +18,14 @@ class GeminiConnectorNode(Node):
 
         self.declare_parameter('api_key', '')
         self.declare_parameter('model', 'gemini-3.5-flash')
+        self.declare_parameter('fleet_config_path', '')
+        self.declare_parameter('waypoints_config_path', '')
 
         self.api_key = self.get_parameter('api_key').value or os.environ.get('GEMINI_API_KEY', '')
         self.api_key_from_env = not self.api_key
         self.model = self.get_parameter('model').value
+        self.valid_robots = self._load_fleet_config(self.get_parameter('fleet_config_path').value)
+        self.waypoint_loader = WaypointLoader(self.get_parameter('waypoints_config_path').value)
 
         if not self.api_key:
             self.get_logger().warn('No GEMINI_API_KEY set. Connector will fail on first command.')
@@ -48,6 +54,22 @@ class GeminiConnectorNode(Node):
     def fleet_state_callback(self, msg: FleetState):
         self.latest_fleet_state = msg
 
+    def _load_fleet_config(self, path):
+        if not path:
+            return []
+        try:
+            with open(path, 'r') as f:
+                config = yaml.safe_load(f)
+            robots = []
+            for entry in config.get('fleet_manager', {}).get('robots', []):
+                ns = entry.get('namespace', '')
+                if ns:
+                    robots.append(ns)
+            return robots
+        except Exception as e:
+            self.get_logger().error(f'Failed to load fleet config: {e}')
+            return []
+
     def command_callback(self, msg: String):
         command = msg.data
         if command == self.last_command:
@@ -73,32 +95,75 @@ class GeminiConnectorNode(Node):
             self._publish_status(f'Gemini API error: {e}')
 
     def _build_prompt(self, command, fleet_state):
+        valid_robots_str = ', '.join(self.valid_robots) if self.valid_robots else 'unknown'
+        primary_robot = self.valid_robots[0] if self.valid_robots else 'unknown'
+        waypoint_names = self.waypoint_loader.get_available_names()
+        waypoint_names_str = ', '.join(waypoint_names) if waypoint_names else 'none'
+        
         return (
             "You are a fleet mission planner for outdoor Husky A200 robots.\n\n"
+            f"Available robot IDs: {primary_robot} (primary), {', '.join(self.valid_robots[1:]) if len(self.valid_robots) > 1 else ''}\n\n"
+            f"Available waypoint names: {waypoint_names_str}\n\n"
             f"Current fleet state:\n{fleet_state}\n\n"
             f"User command:\n{command}\n\n"
-            'You MUST respond with ONLY a JSON object in this exact format. '
-            'No extra text, no markdown fences.\n\n'
+            "Respond based on what the user is asking:\n\n"
+            "1. If the user is asking a QUESTION (e.g., 'is the robot stuck?', 'what's the status?'), "
+            "respond with a natural language answer based on the fleet state.\n\n"
+            "2. If the user is giving a COMMAND (e.g., 'send robot to x=3,y=0', 'go to point_a', 'stop all robots', 'turn 180 degrees'), "
+            "respond with ONLY a JSON object in this exact format. No extra text, no markdown fences.\n\n"
             '{\n'
             '  "missions": [\n'
             '    {\n'
             '      "action": "navigate",\n'
-            '      "robot_id": "<robot namespace>",\n'
+            '      "robot_id": "<robot namespace from available list>",\n'
             '      "waypoints": [{"x": <float>, "y": <float>}],\n'
             '      "priority": <int 1-5>\n'
             '    },\n'
             '    {\n'
+            '      "action": "navigate",\n'
+            '      "robot_id": "<robot namespace from available list>",\n'
+            '      "waypoint_name": "<name from available waypoint names>"\n'
+            '    },\n'
+            '    {\n'
+            '      "action": "navigate",\n'
+            '      "robot_id": "<robot namespace from available list>",\n'
+            '      "waypoints": [{"lat": <float>, "lon": <float>}]\n'
+            '    },\n'
+            '    {\n'
             '      "action": "set_state",\n'
-            '      "robot_id": "<robot namespace>",\n'
+            '      "robot_id": "<robot namespace from available list>",\n'
             '      "waiting": <bool>,\n'
             '      "avoidance_enabled": <bool>\n'
+            '    },\n'
+            '    {\n'
+            '      "action": "rotate",\n'
+            '      "robot_id": "<robot namespace from available list>",\n'
+            '      "angle_deg": <float>\n'
+            '    },\n'
+            '    {\n'
+            '      "action": "emergency_stop",\n'
+            '      "robot_id": "<robot namespace from available list>"\n'
+            '    },\n'
+            '    {\n'
+            '      "action": "clear_emergency_stop",\n'
+            '      "robot_id": "<robot namespace from available list>"\n'
+            '    },\n'
+            '    {\n'
+            '      "action": "go_home",\n'
+            '      "robot_id": "<robot namespace from available list>"\n'
             '    }\n'
             '  ]\n'
             '}\n\n'
-            'Rules:\n'
-            '- action must be "navigate" or "set_state"\n'
-            '- navigate: waypoints[] required, each with numeric x and y. priority 1-5 (optional, default 3).\n'
+            'Rules for JSON missions:\n'
+            '- action must be "navigate", "set_state", "rotate", "emergency_stop", "clear_emergency_stop", or "go_home"\n'
+            '- robot_id MUST be one of the available robot IDs listed above\n'
+            '- If the user says "the robot", "send robot", or doesn\'t specify which robot, use the primary robot\n'
+            '- navigate: use "waypoint_name" for named locations, or "waypoints" with {x,y} odom coords or {lat,lon} GPS coords. priority 1-5 (optional, default 3).\n'
             '- set_state: at least one of waiting or avoidance_enabled as boolean.\n'
+            '- rotate: angle_deg required (float, degrees, positive=CCW, negative=CW). Use for "turn", "rotate", "spin" commands.\n'
+            '- emergency_stop: immediately stops the robot. Use for "stop", "halt", "emergency stop", "abort" commands.\n'
+            '- clear_emergency_stop: clears emergency stop flag after it was triggered. Use for "resume", "clear stop", "continue" commands after emergency stop.\n'
+            '- go_home: sends robot to its charging station / origin. Use for "go home", "return to base", "return to origin", "go back to start" commands.\n'
             '- Return the JSON object only. No explanation, no markdown.'
         )
 

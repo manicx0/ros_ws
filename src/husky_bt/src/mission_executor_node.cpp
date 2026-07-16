@@ -16,11 +16,15 @@
 #include "bt_nodes/navigate_to_goal_action.cpp"
 #include "bt_nodes/obstacle_check_condition.cpp"
 #include "bt_nodes/recovery_rotate_action.cpp"
+#include "bt_nodes/recovery_reverse_action.cpp"
+#include "bt_nodes/recovery_failed_action.cpp"
 #include "bt_nodes/emergency_stop_condition.cpp"
 #include "bt_nodes/waiting_condition.cpp"
 #include "bt_nodes/idle_monitor.cpp"
 #include "bt_nodes/avoidance_condition.cpp"
 #include "bt_nodes/stop_and_wait.cpp"
+#include "bt_nodes/stuck_check_condition.cpp"
+#include "bt_nodes/gps_fix_check_condition.cpp"
 
 class MissionExecutorNode : public rclcpp::Node {
 public:
@@ -143,6 +147,7 @@ private:
     if (blackboard_) {
       blackboard_->set<geometry_msgs::msg::PoseStamped>("target_pose", handle->get_goal()->target_pose);
       blackboard_->set<bool>("has_goal", true);
+      blackboard_->set<int>("recovery_attempts", 0);
     }
 
     active_goal_ = handle;
@@ -185,6 +190,23 @@ private:
       auto result = std::make_shared<NavigateTo::Result>();
       result->success = false;
       result->message = "Emergency stop";
+      active_goal_->abort(result);
+      waiting_for_result_ = false;
+      active_goal_.reset();
+      return;
+    }
+
+    bool recovery_failed = false;
+    (void)blackboard_->get<bool>("recovery_failed", recovery_failed);
+    if (recovery_failed) {
+      publishZeroVelocity();
+      blackboard_->set<bool>("mission_active", false);
+      blackboard_->set<bool>("has_goal", false);
+      blackboard_->set<bool>("recovery_failed", false);
+
+      auto result = std::make_shared<NavigateTo::Result>();
+      result->success = false;
+      result->message = "Stuck - recovery failed";
       active_goal_->abort(result);
       waiting_for_result_ = false;
       active_goal_.reset();
@@ -281,11 +303,15 @@ int main(int argc, char** argv) {
   factory.registerNodeType<NavigateToGoal>("NavigateToGoal", node);
   factory.registerNodeType<ObstacleCheck>("ObstacleCheck", node);
   factory.registerNodeType<RecoveryRotate>("RecoveryRotate", node);
+  factory.registerNodeType<RecoveryReverse>("RecoveryReverse", node);
+  factory.registerNodeType<RecoveryFailed>("RecoveryFailed", node);
   factory.registerNodeType<EmergencyStopCondition>("EmergencyStopCondition", node);
   factory.registerNodeType<WaitingCondition>("WaitingCondition", node);
   factory.registerNodeType<IdleMonitor>("IdleMonitor", node);
   factory.registerNodeType<AvoidanceEnabledCondition>("AvoidanceEnabledCondition", node);
   factory.registerNodeType<StopAndWait>("StopAndWait", node);
+  factory.registerNodeType<StuckCheck>("StuckCheck", node);
+  factory.registerNodeType<GpsFixCheck>("GpsFixCheck", node);
 
   std::string bt_xml_dir;
   node->declare_parameter<std::string>("bt_xml_dir", "");

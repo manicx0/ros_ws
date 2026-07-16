@@ -27,11 +27,18 @@ def generate_launch_description():
         'fleet.yaml'
     )
 
+    waypoints_config_path = os.path.join(
+        get_package_share_directory('husky_llm_bridge'),
+        'config',
+        'waypoints.yaml'
+    )
+
     bridge_node = Node(
         package='husky_llm_bridge',
         executable='llm_bridge_node.py',
         name='llm_bridge',
-        output='screen'
+        output='screen',
+        parameters=[{'fleet_config_path': fleet_config_path, 'waypoints_config_path': waypoints_config_path}]
     )
 
     validator_node = Node(
@@ -46,7 +53,8 @@ def generate_launch_description():
         package='husky_llm_bridge',
         executable=LaunchConfiguration('connector'),
         name='llm_connector',
-        output='screen'
+        output='screen',
+        parameters=[{'fleet_config_path': fleet_config_path, 'waypoints_config_path': waypoints_config_path}]
     )
 
     fleet_manager_launch = IncludeLaunchDescription(

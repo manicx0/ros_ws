@@ -17,7 +17,10 @@ class HuskyCLI(Node):
             String, '/llm/decision_status', self._decision_status_cb, 10)
         self.goal_event_sub = self.create_subscription(
             GoalEvent, '/fleet/goal_events', self._goal_event_cb, 10)
+        self.raw_decision_sub = self.create_subscription(
+            String, '/llm/raw_decision', self._raw_decision_cb, 10)
         self.fleet_state = None
+        self.waiting_for_response = False
 
     def _fleet_state_cb(self, msg):
         self.fleet_state = msg
@@ -29,6 +32,16 @@ class HuskyCLI(Node):
     def _goal_event_cb(self, msg):
         print(f"\n\033[1;34m[Event]\033[0m {msg.robot_id}: {msg.type}")
         print("\033[1;32mhusky>\033[0m ", end='', flush=True)
+
+    def _raw_decision_cb(self, msg):
+        if self.waiting_for_response:
+            self.waiting_for_response = False
+            response = msg.data.strip()
+            if response.startswith('{'):
+                print(f"\n\033[1;35m[LLM]\033[0m Processing mission...")
+            else:
+                print(f"\n\033[1;35m[LLM]\033[0m {response}")
+            print("\033[1;32mhusky>\033[0m ", end='', flush=True)
 
     def run(self):
         print("\033[1;36mHusky Fleet CLI\033[0m (type 'help' for commands)\n")
@@ -53,6 +66,7 @@ class HuskyCLI(Node):
         msg = String()
         msg.data = cmd
         self.command_pub.publish(msg)
+        self.waiting_for_response = True
         print("\033[1;34m[Sent]\033[0m", cmd)
 
     def _show_status(self):

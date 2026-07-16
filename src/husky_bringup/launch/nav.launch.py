@@ -30,6 +30,7 @@ def generate_launch_description():
             name='obstacle_detector',
             output='screen',
             parameters=[{'use_sim_time': use_sim_time}],
+            remappings=[('velodyne_points', 'sensors/lidar3d_0/points')],
         ),
 
         Node(
@@ -57,6 +58,20 @@ def generate_launch_description():
             name='goal_pose_relay',
             output='screen',
             parameters=[{'use_sim_time': use_sim_time}],
+        ),
+
+        Node(
+            package='husky_nav',
+            executable='stuck_detector_node',
+            name='stuck_detector',
+            output='screen',
+            parameters=[
+                {'use_sim_time': use_sim_time},
+                {'speed_threshold': 0.1},
+                {'stuck_threshold': 0.05},
+                {'grace_period': 2.0},
+                {'stuck_timeout': 8.0},
+            ],
         ),
     ])
 

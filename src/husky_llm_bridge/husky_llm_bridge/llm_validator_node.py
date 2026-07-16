@@ -130,8 +130,8 @@ class LLMValidatorNode(Node):
             return f'{prefix}: must be an object'
 
         action = mission.get('action')
-        if action not in ('navigate', 'set_state'):
-            return f'{prefix}: action must be "navigate" or "set_state", got "{action}"'
+        if action not in ('navigate', 'set_state', 'rotate', 'emergency_stop', 'go_home', 'clear_emergency_stop'):
+            return f'{prefix}: action must be "navigate", "set_state", "rotate", "emergency_stop", "go_home", or "clear_emergency_stop", got "{action}"'
 
         robot_id = mission.get('robot_id')
         if not isinstance(robot_id, str) or not robot_id:
@@ -143,6 +143,14 @@ class LLMValidatorNode(Node):
             return self._validate_navigate(idx, mission)
         elif action == 'set_state':
             return self._validate_set_state(idx, mission)
+        elif action == 'rotate':
+            return self._validate_rotate(idx, mission)
+        elif action == 'emergency_stop':
+            return self._validate_emergency_stop(idx, mission)
+        elif action == 'go_home':
+            return self._validate_go_home(idx, mission)
+        elif action == 'clear_emergency_stop':
+            return self._validate_clear_emergency_stop(idx, mission)
 
         return None
 
@@ -150,20 +158,52 @@ class LLMValidatorNode(Node):
         prefix = f'Mission[{idx}]'
 
         waypoints = mission.get('waypoints')
-        if waypoints is None:
-            return f'{prefix}: missing "waypoints"'
-        if not isinstance(waypoints, list) or len(waypoints) == 0:
-            return f'{prefix}: "waypoints" must be a non-empty array'
+        waypoint_name = mission.get('waypoint_name')
+        waypoint_names = mission.get('waypoint_names')
 
-        for j, wp in enumerate(waypoints):
-            if not isinstance(wp, dict):
-                return f'{prefix}: waypoint[{j}] must be an object'
-            x = wp.get('x')
-            y = wp.get('y')
-            if x is None or y is None:
-                return f'{prefix}: waypoint[{j}] missing x or y'
-            if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
-                return f'{prefix}: waypoint[{j}] x and y must be numeric'
+        if waypoints is None and waypoint_name is None and waypoint_names is None:
+            return f'{prefix}: must have "waypoints", "waypoint_name", or "waypoint_names"'
+
+        if waypoints is not None:
+            if not isinstance(waypoints, list) or len(waypoints) == 0:
+                return f'{prefix}: "waypoints" must be a non-empty array'
+
+            for j, wp in enumerate(waypoints):
+                if not isinstance(wp, dict):
+                    return f'{prefix}: waypoint[{j}] must be an object'
+                x = wp.get('x')
+                y = wp.get('y')
+                lat = wp.get('lat')
+                lon = wp.get('lon')
+
+                has_odom = x is not None and y is not None
+                has_gps = lat is not None and lon is not None
+
+                if not has_odom and not has_gps:
+                    return f'{prefix}: waypoint[{j}] must have {x, y} or {lat, lon}'
+
+                if has_odom:
+                    if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+                        return f'{prefix}: waypoint[{j}] x and y must be numeric'
+
+                if has_gps:
+                    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+                        return f'{prefix}: waypoint[{j}] lat and lon must be numeric'
+                    if lat < -90 or lat > 90:
+                        return f'{prefix}: waypoint[{j}] lat must be between -90 and 90'
+                    if lon < -180 or lon > 180:
+                        return f'{prefix}: waypoint[{j}] lon must be between -180 and 180'
+
+        if waypoint_name is not None:
+            if not isinstance(waypoint_name, str) or not waypoint_name:
+                return f'{prefix}: "waypoint_name" must be a non-empty string'
+
+        if waypoint_names is not None:
+            if not isinstance(waypoint_names, list) or len(waypoint_names) == 0:
+                return f'{prefix}: "waypoint_names" must be a non-empty array'
+            for j, name in enumerate(waypoint_names):
+                if not isinstance(name, str) or not name:
+                    return f'{prefix}: waypoint_names[{j}] must be a non-empty string'
 
         priority = mission.get('priority', 3)
         if not isinstance(priority, int) or priority < 1 or priority > 5:
@@ -185,6 +225,28 @@ class LLMValidatorNode(Node):
         if avoidance is not None and not isinstance(avoidance, bool):
             return f'{prefix}: "avoidance_enabled" must be a boolean'
 
+        return None
+
+    def _validate_rotate(self, idx, mission):
+        prefix = f'Mission[{idx}]'
+
+        angle_deg = mission.get('angle_deg')
+        if angle_deg is None:
+            return f'{prefix}: missing "angle_deg"'
+        if not isinstance(angle_deg, (int, float)):
+            return f'{prefix}: "angle_deg" must be numeric'
+        if angle_deg < -360 or angle_deg > 360:
+            return f'{prefix}: "angle_deg" must be between -360 and 360'
+
+        return None
+
+    def _validate_emergency_stop(self, idx, mission):
+        return None
+
+    def _validate_go_home(self, idx, mission):
+        return None
+
+    def _validate_clear_emergency_stop(self, idx, mission):
         return None
 
     def _publish_status(self, success, reason):

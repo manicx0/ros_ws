@@ -145,6 +145,13 @@ sensors:
       parent: top_chassis_link    # NOT top_plate_link (doesn't exist in A200 URDF)
       xyz: [0.0, 0.0, 0.12]
       rpy: [0.0, 0.0, 0.0]
+  gps:
+    - model: garmin_18x
+      urdf_enabled: true
+      launch_enabled: true
+      parent: top_chassis_link    # NOT top_plate_link (doesn't exist in A200 URDF)
+      xyz: [0.0, 0.0, 0.1]
+      rpy: [0.0, 0.0, 0.0]
 ```
 
 All commands need `source install/setup.bash` first.
@@ -165,7 +172,16 @@ source install/setup.bash
 ros2 launch husky_bringup nav.launch.py namespace:=cpr_a200_0000
 ```
 
-Starts pure_pursuit, path_planner, obstacle_detector, EKF.
+Starts pure_pursuit, path_planner, obstacle_detector, stuck_detector.
+
+### Terminal 2b: GPS + EKF (optional)
+
+```bash
+source install/setup.bash
+ros2 launch husky_bringup gps.launch.py namespace:=cpr_a200_0000
+```
+
+Starts navsat_transform_node + EKF with GPS fusion. Requires GPS sensor in robot.yaml and `<spherical_coordinates>` in world file.
 
 ### Terminal 3: RViz
 
@@ -223,6 +239,11 @@ Interactive REPL:
 ```
 husky> send robot to x=3,y=0
 [Sent] send robot to x=3,y=0
+[LLM] Processing mission...
+
+husky> is the robot stuck?
+[Sent] is the robot stuck?
+[LLM] Robot cpr_a200_0000 is not stuck. It is currently IDLE.
 
 husky> status
 cpr_a200_0000: IDLE
@@ -237,6 +258,8 @@ Commands:
 
 husky> quit
 ```
+
+The CLI supports both mission commands and natural language questions. The LLM will respond with mission execution for commands, or natural language answers for questions.
 
 ### Autonomous goal
 
@@ -338,6 +361,106 @@ The validator rejects invalid data. Examples:
 ```
 [llm_validator_node.py-3]: Validation failed: Mission[0]: priority must be 1-5
 ```
+
+## Safety Features
+
+### Reactive Obstacle Avoidance
+
+The robot uses its 3D lidar to detect obstacles and react in real-time, even when the LLM commands it to move forward.
+
+**Behavior:**
+- **Poles/narrow obstacles** (< 0.5 rad angular width): Robot steers toward the nearest gap and continues at 50% speed
+- **Walls/wide obstacles** (>= 0.5 rad angular width): Robot stops completely (linear.x = 0, angular.z = 0)
+- **Clear path**: Normal pure pursuit navigation resumes
+
+**How it works:**
+1. `obstacle_detector_node` filters 3D lidar point cloud and publishes `scan_2d` (LaserScan)
+2. `pure_pursuit_node` subscribes to `scan_2d` and classifies obstacles as pole or wall
+3. Checks a ±0.5 rad forward cone (not just a single ray) to detect obstacles slightly off-center
+4. For poles: finds the nearest gap and steers toward it
+5. For walls: stops the robot
+6. BT's `ObstacleCheck` also monitors `scan_2d` for additional safety
+
+**Parameters** (in `config/pure_pursuit_params.yaml`):
+- `avoidance_distance`: 2.0m — max distance to detect obstacles
+- `wall_angular_threshold`: 0.5 rad — angular width threshold for wall vs pole
+- `avoidance_speed_factor`: 0.5 — speed multiplier during pole avoidance
+- `min_gap_width`: 0.3 rad — minimum gap width to steer toward
+
+### Stuck Detection
+
+The robot monitors commanded vs actual velocity. If the robot is commanded to move but isn't moving for 8 seconds, it's considered stuck.
+
+**Behavior:**
+1. Robot detects stuck → executes `RecoveryRotate` (3s rotation)
+2. Checks if unstuck → if yes, continues navigation
+3. If still stuck → tries recovery again (up to 3 attempts)
+4. After 3 failed attempts → tree halts permanently, robot stops
+5. Operator must send new goal to resume
+
+**Parameters** (in `nav.launch.py`):
+- `speed_threshold`: 0.1 m/s (minimum commanded speed to trigger detection)
+- `stuck_threshold`: 0.05 m/s (actual speed below this = stuck)
+- `grace_period`: 2.0s (time before stuck detection starts)
+- `stuck_timeout`: 8.0s (duration of stuck condition before triggering)
+
+**Limitation:** Stuck detection requires active `cmd_vel` commands. If the robot is physically blocked but no velocity is commanded (e.g., mission completed or aborted), stuck detection won't trigger.
+
+**Check status:**
+```bash
+ros2 topic echo /cpr_a200_0000/stuck
+```
+
+### GPS Fix Loss
+
+If GPS fix is lost (status == -1 or no GPS message for 5 seconds), the behavior tree halts and the robot stops.
+
+**Behavior:**
+- Tree halts immediately when GPS fix is lost
+- Robot stops (no movement)
+- Operator must wait for GPS fix to return
+- When fix returns, tree resumes automatically
+
+**Check GPS status:**
+```bash
+ros2 topic echo /cpr_a200_0000/sensors/gps_0/fix
+```
+
+### Rotate Action
+
+The robot can perform in-place rotations without forward movement. This is useful for turning to face a specific direction or recovering from being stuck.
+
+**Usage via CLI:**
+```bash
+husky
+husky> turn the robot 180 degrees
+husky> rotate 90 degrees left
+husky> spin right by 45 degrees
+```
+
+**JSON format:**
+```json
+{
+  "action": "rotate",
+  "robot_id": "cpr_a200_0000",
+  "angle_deg": 180.0
+}
+```
+
+**Parameters:**
+- `angle_deg`: Rotation angle in degrees (positive = counterclockwise, negative = clockwise)
+- Range: -360 to 360 degrees
+
+**How it works:**
+1. LLM generates rotate mission with angle
+2. Bridge publishes angle to `/cpr_a200_0000/rotation_goal` topic
+3. Pure pursuit enters rotation mode: `linear.x = 0`, `angular.z = sign(angle) * rotation_speed`
+4. Exits rotation mode when within tolerance (0.1 rad) or timeout (10s)
+
+**Parameters** (in `config/pure_pursuit_params.yaml`):
+- `rotation_speed`: 0.4 rad/s
+- `rotation_tolerance`: 0.1 rad
+- `rotation_timeout`: 10.0s
 
 ## Troubleshooting
 

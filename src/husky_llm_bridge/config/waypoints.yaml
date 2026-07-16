@@ -1,0 +1,28 @@
+# Named waypoints for LLM mission planning
+# Waypoints can be defined in odom frame (x, y) or GPS coordinates (lat, lon)
+# GPS coordinates are converted to odom using the gps_origin below
+
+gps_origin:
+  lat: 47.397742
+  lon: 8.545594
+
+waypoints:
+  origin:
+    name: "Charging Station"
+    odom: {x: 0.0, y: 0.0}
+  
+  point_a:
+    name: "Loading Dock"
+    odom: {x: 8.0, y: 5.0}
+  
+  point_b:
+    name: "Inspection Zone"
+    odom: {x: -3.0, y: 12.0}
+  
+  point_c:
+    name: "Refuel Point"
+    odom: {x: 15.0, y: -7.0}
+  
+  point_d:
+    name: "Storage"
+    odom: {x: -10.0, y: -10.0}

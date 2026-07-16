@@ -1,18 +1,29 @@
 #!/usr/bin/env python3
 import json
+import math
+import yaml
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import String
+from std_msgs.msg import String, Float64, Bool
 from husky_msgs.msg import FleetState, FleetGoal, GoalEvent
 from husky_msgs.action import FleetNavigate
 from husky_msgs.srv import FleetSetState
+from husky_llm_bridge.waypoint_loader import WaypointLoader
 
 
 class LLMBridgeNode(Node):
     def __init__(self):
         super().__init__('llm_bridge_node')
+
+        self.declare_parameter('fleet_config_path', '')
+        self.declare_parameter('waypoints_config_path', '')
+
+        fleet_config_path = self.get_parameter('fleet_config_path').value
+        waypoints_config_path = self.get_parameter('waypoints_config_path').value
+        self.home_poses = self._load_home_poses(fleet_config_path)
+        self.waypoint_loader = WaypointLoader(waypoints_config_path)
 
         self.fleet_state_sub = self.create_subscription(
             FleetState,
@@ -37,9 +48,32 @@ class LLMBridgeNode(Node):
 
         self.fleet_navigate_client = ActionClient(self, FleetNavigate, '/fleet/fleet_navigate')
         self.fleet_set_state_client = self.create_client(FleetSetState, '/fleet/set_fleet_state')
+        self.rotation_pubs = {}  # robot_id -> publisher
+        self.emergency_stop_pubs = {}  # robot_id -> publisher
 
         self.latest_fleet_state = None
         self.get_logger().info('LLM bridge initialized')
+
+    def _load_home_poses(self, path):
+        if not path:
+            return {}
+        try:
+            with open(path, 'r') as f:
+                config = yaml.safe_load(f)
+            home_poses = {}
+            for entry in config.get('fleet_manager', {}).get('robots', []):
+                ns = entry.get('namespace', '')
+                home_pose = entry.get('home_pose', {})
+                if ns and home_pose:
+                    home_poses[ns] = {
+                        'x': home_pose.get('x', 0.0),
+                        'y': home_pose.get('y', 0.0),
+                        'yaw': home_pose.get('yaw', 0.0)
+                    }
+            return home_poses
+        except Exception as e:
+            self.get_logger().error(f'Failed to load home poses from fleet config: {e}')
+            return {}
 
     def fleet_state_callback(self, msg: FleetState):
         self.latest_fleet_state = msg
@@ -76,12 +110,28 @@ class LLMBridgeNode(Node):
 
         navigate_missions = [m for m in missions if m.get('action') == 'navigate']
         set_state_missions = [m for m in missions if m.get('action') == 'set_state']
+        rotate_missions = [m for m in missions if m.get('action') == 'rotate']
+        emergency_stop_missions = [m for m in missions if m.get('action') == 'emergency_stop']
+        go_home_missions = [m for m in missions if m.get('action') == 'go_home']
+        clear_emergency_stop_missions = [m for m in missions if m.get('action') == 'clear_emergency_stop']
 
         if navigate_missions:
             self._send_navigate_missions(navigate_missions)
 
         if set_state_missions:
             self._send_set_state_missions(set_state_missions)
+
+        if rotate_missions:
+            self._send_rotate_missions(rotate_missions)
+
+        if emergency_stop_missions:
+            self._send_emergency_stop_missions(emergency_stop_missions)
+
+        if go_home_missions:
+            self._send_go_home_missions(go_home_missions)
+
+        if clear_emergency_stop_missions:
+            self._send_clear_emergency_stop_missions(clear_emergency_stop_missions)
 
     def _send_navigate_missions(self, missions):
         if not self.fleet_navigate_client.wait_for_server(timeout_sec=5.0):
@@ -96,20 +146,63 @@ class LLMBridgeNode(Node):
             pose = PoseStamped()
             pose.header.frame_id = 'odom'
 
-            waypoints = mission.get('waypoints', [])
-            if waypoints:
-                wp = waypoints[0]
-                pose.pose.position.x = float(wp['x'])
-                pose.pose.position.y = float(wp['y'])
-                pose.pose.position.z = float(wp.get('z', 0.0))
-                pose.pose.orientation.w = 1.0
+            x, y = self._resolve_waypoint(mission)
+            if x is None or y is None:
+                self.get_logger().error(f'Could not resolve waypoint for {mission["robot_id"]}')
+                continue
+
+            pose.pose.position.x = float(x)
+            pose.pose.position.y = float(y)
+            pose.pose.position.z = 0.0
+            pose.pose.orientation.w = 1.0
 
             fleet_goal.target_pose = pose
             goal.goals.append(fleet_goal)
 
-        self.get_logger().info(f'Sending {len(goal.goals)} navigate goal(s)')
-        future = self.fleet_navigate_client.send_goal_async(goal)
-        future.add_done_callback(self._navigate_goal_response_callback)
+        if goal.goals:
+            self.get_logger().info(f'Sending {len(goal.goals)} navigate goal(s)')
+            future = self.fleet_navigate_client.send_goal_async(goal)
+            future.add_done_callback(self._navigate_goal_response_callback)
+
+    def _resolve_waypoint(self, mission):
+        waypoint_name = mission.get('waypoint_name')
+        waypoint_names = mission.get('waypoint_names')
+        waypoints = mission.get('waypoints')
+
+        if waypoint_name:
+            wp = self.waypoint_loader.get_waypoint(waypoint_name)
+            if wp:
+                return wp.get('x'), wp.get('y')
+            self.get_logger().error(f'Unknown waypoint name: {waypoint_name}')
+            return None, None
+
+        if waypoint_names:
+            wp = self.waypoint_loader.get_waypoint(waypoint_names[0])
+            if wp:
+                return wp.get('x'), wp.get('y')
+            self.get_logger().error(f'Unknown waypoint name: {waypoint_names[0]}')
+            return None, None
+
+        if waypoints:
+            wp = waypoints[0]
+            if 'x' in wp and 'y' in wp:
+                return wp['x'], wp['y']
+            if 'lat' in wp and 'lon' in wp:
+                return self._gps_to_xy(wp['lat'], wp['lon'])
+
+        return None, None
+
+    def _gps_to_xy(self, lat_deg, lon_deg):
+        origin = self.waypoint_loader.gps_origin
+        if not origin:
+            self.get_logger().error('No GPS origin configured for coordinate conversion')
+            return None, None
+
+        lat = math.radians(lat_deg)
+        lon = math.radians(lon_deg)
+        x = (lon - origin['lon']) * math.cos(origin['lat']) * 6371000.0
+        y = (lat - origin['lat']) * 6371000.0
+        return x, y
 
     def _navigate_goal_response_callback(self, future):
         goal_handle = future.result()
@@ -146,6 +239,79 @@ class LLMBridgeNode(Node):
     def _set_state_response_callback(self, future):
         response = future.result()
         self.get_logger().info(f'Fleet state set: {response.results}')
+
+    def _send_rotate_missions(self, missions):
+        for mission in missions:
+            robot_id = mission.get('robot_id')
+            angle_deg = mission.get('angle_deg', 0.0)
+            
+            # Create publisher for this robot if it doesn't exist
+            if robot_id not in self.rotation_pubs:
+                topic = f'/{robot_id}/rotation_goal'
+                self.rotation_pubs[robot_id] = self.create_publisher(Float64, topic, 10)
+            
+            msg = Float64()
+            msg.data = float(angle_deg)
+            self.rotation_pubs[robot_id].publish(msg)
+            self.get_logger().info(f'Published rotation goal to {robot_id}: {angle_deg} degrees')
+
+    def _send_emergency_stop_missions(self, missions):
+        for mission in missions:
+            robot_id = mission.get('robot_id')
+            
+            if robot_id not in self.emergency_stop_pubs:
+                topic = f'/{robot_id}/emergency_stop'
+                self.emergency_stop_pubs[robot_id] = self.create_publisher(Bool, topic, 10)
+            
+            msg = Bool()
+            msg.data = True
+            self.emergency_stop_pubs[robot_id].publish(msg)
+            self.get_logger().info(f'Emergency stop triggered for {robot_id}')
+
+    def _send_go_home_missions(self, missions):
+        if not self.fleet_navigate_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error('Fleet navigate action server not available')
+            return
+
+        goal = FleetNavigate.Goal()
+        for mission in missions:
+            robot_id = mission.get('robot_id')
+            
+            if robot_id not in self.home_poses:
+                self.get_logger().error(f'No home pose configured for {robot_id}')
+                continue
+            
+            home = self.home_poses[robot_id]
+            fleet_goal = FleetGoal()
+            fleet_goal.robot_id = robot_id
+
+            pose = PoseStamped()
+            pose.header.frame_id = 'odom'
+            pose.pose.position.x = float(home['x'])
+            pose.pose.position.y = float(home['y'])
+            pose.pose.position.z = 0.0
+            pose.pose.orientation.w = 1.0
+
+            fleet_goal.target_pose = pose
+            goal.goals.append(fleet_goal)
+
+        if goal.goals:
+            self.get_logger().info(f'Sending {len(goal.goals)} go_home goal(s)')
+            future = self.fleet_navigate_client.send_goal_async(goal)
+            future.add_done_callback(self._navigate_goal_response_callback)
+
+    def _send_clear_emergency_stop_missions(self, missions):
+        for mission in missions:
+            robot_id = mission.get('robot_id')
+            
+            if robot_id not in self.emergency_stop_pubs:
+                topic = f'/{robot_id}/emergency_stop'
+                self.emergency_stop_pubs[robot_id] = self.create_publisher(Bool, topic, 10)
+            
+            msg = Bool()
+            msg.data = False
+            self.emergency_stop_pubs[robot_id].publish(msg)
+            self.get_logger().info(f'Emergency stop cleared for {robot_id}')
 
 
 def main(args=None):
