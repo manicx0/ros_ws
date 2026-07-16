@@ -12,7 +12,7 @@ def generate_launch_description():
     connector_arg = DeclareLaunchArgument(
         'connector',
         default_value='gemini_connector_node.py',
-        description='Which LLM connector to launch: gemini_connector_node.py or ollama_connector_node.py'
+        description='Which LLM connector to launch: gemini_connector_node.py, deepseek_connector_node.py, or ollama_connector_node.py'
     )
 
     include_fleet_manager_arg = DeclareLaunchArgument(

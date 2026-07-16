@@ -224,9 +224,17 @@ ros2 launch husky_bringup mission.launch.py namespace:=cpr_a200_0000 bt_file:=pa
 ### Terminal 6: LLM Fleet Pipeline
 
 ```bash
+# Gemini (default)
 export GEMINI_API_KEY="your-key-here"
 source install/setup.bash
 ros2 launch husky_llm_bridge llm_bridge.launch.py
+
+# Or use DeepSeek
+export DEEPSEEK_API_KEY="your-key-here"
+ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py
+
+# Or use Ollama (local)
+ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=ollama_connector_node.py
 ```
 
 Then use the CLI to send commands:
@@ -287,15 +295,53 @@ All nodes run under `cpr_a200_0000/` namespace. Topics are scoped to the robot, 
 
 Set API key before launching the bridge:
 
+**Gemini (default):**
 ```bash
 export GEMINI_API_KEY="your-key-here"
 ```
+
+**DeepSeek:**
+```bash
+export DEEPSEEK_API_KEY="your-key-here"
+```
+
+**Ollama (local):**
+No API key required. Ensure Ollama is running on `http://localhost:11434`.
 
 Or add to `~/.bashrc` for persistence:
 
 ```bash
 echo 'export GEMINI_API_KEY="your-key-here"' >> ~/.bashrc
 ```
+
+### LLM Connector Configuration
+
+The LLM bridge supports multiple LLM providers. Switch between them using the `connector` launch argument:
+
+**Gemini (default):**
+```bash
+ros2 launch husky_llm_bridge llm_bridge.launch.py
+# or explicitly:
+ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=gemini_connector_node.py
+```
+
+**DeepSeek:**
+```bash
+export DEEPSEEK_API_KEY="your-key-here"
+ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py
+```
+
+**Ollama (local):**
+```bash
+ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=ollama_connector_node.py
+```
+
+**Available connectors:**
+- `gemini_connector_node.py` — Google Gemini API (default)
+- `deepseek_connector_node.py` — DeepSeek API (OpenAI-compatible)
+- `ollama_connector_node.py` — Ollama local server (OpenAI-compatible)
+
+All connectors use the same prompt structure and produce identical JSON output. The validator, bridge, and fleet manager work the same regardless of which connector is used.
 
 ### Debugging
 

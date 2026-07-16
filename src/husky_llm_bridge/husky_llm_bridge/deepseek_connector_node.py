@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import urllib.request
 import urllib.error
 import yaml
@@ -11,19 +12,23 @@ from husky_llm_bridge.fleet_state_util import format_fleet_state
 from husky_llm_bridge.waypoint_loader import WaypointLoader
 
 
-class OllamaConnectorNode(Node):
+class DeepSeekConnectorNode(Node):
     def __init__(self):
-        super().__init__('ollama_connector_node')
+        super().__init__('deepseek_connector_node')
 
-        self.declare_parameter('ollama_url', 'http://localhost:11434')
-        self.declare_parameter('model', 'llama3.2')
+        self.declare_parameter('api_key', '')
+        self.declare_parameter('model', 'deepseek-v4-flash')
         self.declare_parameter('fleet_config_path', '')
         self.declare_parameter('waypoints_config_path', '')
 
-        self.ollama_url = self.get_parameter('ollama_url').value
+        self.api_key = self.get_parameter('api_key').value or os.environ.get('DEEPSEEK_API_KEY', '')
+        self.api_key_from_env = not self.api_key
         self.model = self.get_parameter('model').value
         self.valid_robots = self._load_fleet_config(self.get_parameter('fleet_config_path').value)
         self.waypoint_loader = WaypointLoader(self.get_parameter('waypoints_config_path').value)
+
+        if not self.api_key:
+            self.get_logger().warn('No DEEPSEEK_API_KEY set. Connector will fail on first command.')
 
         self.command_sub = self.create_subscription(
             String,
@@ -44,7 +49,7 @@ class OllamaConnectorNode(Node):
 
         self.latest_fleet_state = None
         self.last_command = None
-        self.get_logger().info(f'Ollama connector initialized. URL: {self.ollama_url}, Model: {self.model}')
+        self.get_logger().info(f'DeepSeek connector initialized. Model: {self.model}')
 
     def fleet_state_callback(self, msg: FleetState):
         self.latest_fleet_state = msg
@@ -72,15 +77,22 @@ class OllamaConnectorNode(Node):
         self.get_logger().info(f'Received command: {command}')
         self.last_command = command
 
+        if self.api_key_from_env:
+            self.api_key = os.environ.get('DEEPSEEK_API_KEY', '')
+
+        if not self.api_key:
+            self._publish_status('No DEEPSEEK_API_KEY configured')
+            return
+
         fleet_state_json = format_fleet_state(self.latest_fleet_state)
         prompt = self._build_prompt(command, fleet_state_json)
 
         try:
-            response = self._call_ollama(prompt)
+            response = self._call_deepseek(prompt)
             self.raw_decision_pub.publish(self._make_string(response))
-            self.get_logger().info('Ollama response published to /llm/raw_decision')
+            self.get_logger().info('DeepSeek response published to /llm/raw_decision')
         except Exception as e:
-            self._publish_status(f'Ollama API error: {e}')
+            self._publish_status(f'DeepSeek API error: {e}')
 
     def _build_prompt(self, command, fleet_state):
         valid_robots_str = ', '.join(self.valid_robots) if self.valid_robots else 'unknown'
@@ -155,35 +167,38 @@ class OllamaConnectorNode(Node):
             '- Return the JSON object only. No explanation, no markdown.'
         )
 
-    def _call_ollama(self, prompt):
-        url = f'{self.ollama_url}/v1/chat/completions'
+    def _call_deepseek(self, prompt):
+        url = 'https://api.deepseek.com/chat/completions'
 
         payload = json.dumps({
             'model': self.model,
             'messages': [
                 {'role': 'user', 'content': prompt}
             ],
-            'stream': False,
+            'thinking': {'type': 'disabled'}
         }).encode('utf-8')
 
         req = urllib.request.Request(
             url,
             data=payload,
-            headers={'Content-Type': 'application/json'},
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {self.api_key}'
+            },
             method='POST'
         )
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             body = json.loads(resp.read().decode('utf-8'))
 
         choices = body.get('choices', [])
         if not choices:
-            raise RuntimeError('No choices in Ollama response')
+            raise RuntimeError('No choices in DeepSeek response')
 
         message = choices[0].get('message', {})
         content = message.get('content', '')
         if not content:
-            raise RuntimeError('No content in Ollama response')
+            raise RuntimeError('No content in DeepSeek response')
 
         return content.strip()
 
@@ -200,7 +215,7 @@ class OllamaConnectorNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = OllamaConnectorNode()
+    node = DeepSeekConnectorNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
