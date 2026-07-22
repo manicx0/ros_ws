@@ -229,9 +229,12 @@ export GEMINI_API_KEY="your-key-here"
 source install/setup.bash
 ros2 launch husky_llm_bridge llm_bridge.launch.py
 
-# Or use DeepSeek
-export DEEPSEEK_API_KEY="your-key-here"
-ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py
+# Or use OpenCode Go (fast)
+export OPENCODE_GO_API_KEY="your-key-here"
+ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py model:=deepseek-v4-flash
+
+# Or use OpenCode Go (reasoning)
+ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py model:=deepseek-v4-pro
 
 # Or use Ollama (local)
 ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=ollama_connector_node.py
@@ -289,6 +292,20 @@ Teleop keyboard (Terminal 4) now has priority via twist_mux. Alternatively, Ctrl
 
 All nodes run under `cpr_a200_0000/` namespace. Topics are scoped to the robot, enabling future multi-robot use — adding a second Husky is just a different namespace.
 
+### OpenCode Go Model Override
+
+Pass `model:=` to the launch file to switch between fast and reasoning models:
+```bash
+# Fast (default):
+ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py
+
+# Reasoning:
+ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py model:=deepseek-v4-pro
+
+# Also works with Gemini:
+ros2 launch husky_llm_bridge llm_bridge.launch.py model:=gemini-3.5-flash
+```
+
 ## LLM Fleet Pipeline
 
 ### Prerequisites
@@ -300,9 +317,9 @@ Set API key before launching the bridge:
 export GEMINI_API_KEY="your-key-here"
 ```
 
-**DeepSeek:**
+**OpenCode Go:**
 ```bash
-export DEEPSEEK_API_KEY="your-key-here"
+export OPENCODE_GO_API_KEY="your-key-here"
 ```
 
 **Ollama (local):**
@@ -325,10 +342,13 @@ ros2 launch husky_llm_bridge llm_bridge.launch.py
 ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=gemini_connector_node.py
 ```
 
-**DeepSeek:**
+**OpenCode Go:**
 ```bash
-export DEEPSEEK_API_KEY="your-key-here"
+export OPENCODE_GO_API_KEY="your-key-here"
+# Fast model (default):
 ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py
+# Reasoning model:
+ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py model:=deepseek-v4-pro
 ```
 
 **Ollama (local):**
@@ -338,7 +358,7 @@ ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=ollama_connector_no
 
 **Available connectors:**
 - `gemini_connector_node.py` — Google Gemini API (default)
-- `deepseek_connector_node.py` — DeepSeek API (OpenAI-compatible)
+- `deepseek_connector_node.py` — OpenCode Go API (OpenAI-compatible, models: `deepseek-v4-flash`, `deepseek-v4-pro`)
 - `ollama_connector_node.py` — Ollama local server (OpenAI-compatible)
 
 All connectors use the same prompt structure and produce identical JSON output. The validator, bridge, and fleet manager work the same regardless of which connector is used.

@@ -31,10 +31,19 @@ public:
   using NavigateTo = husky_msgs::action::NavigateTo;
   using GoalHandleNavigateTo = rclcpp_action::ServerGoalHandle<NavigateTo>;
 
+  static constexpr int EM_STOP_SOURCE_SOFTWARE = 0;
+  static constexpr int EM_STOP_SOURCE_HARDWARE = 1;
+
   MissionExecutorNode() : Node("mission_executor_node") {
     emergency_stop_sub_ = create_subscription<std_msgs::msg::Bool>(
       "emergency_stop", 10,
       std::bind(&MissionExecutorNode::emergencyStopCallback, this, std::placeholders::_1));
+
+    hardware_emergency_stop_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "platform/emergency_stop", 10,
+      std::bind(&MissionExecutorNode::hardwareEmergencyStopCallback, this, std::placeholders::_1));
+
+    emergency_stop_pub_ = create_publisher<std_msgs::msg::Bool>("emergency_stop", 10);
 
     state_pub_ = create_publisher<husky_msgs::msg::RobotState>("robot_state", 10);
     event_pub_ = create_publisher<husky_msgs::msg::GoalEvent>("/fleet/goal_events", 10);
@@ -56,6 +65,7 @@ public:
       std::bind(&MissionExecutorNode::onTimer, this));
 
     emergency_stop_ = false;
+    emergency_stop_source_ = EM_STOP_SOURCE_SOFTWARE;
     waiting_ = false;
     idle_ = true;
     avoidance_enabled_ = true;
@@ -82,6 +92,19 @@ public:
 private:
   void emergencyStopCallback(const std_msgs::msg::Bool::SharedPtr msg) {
     emergency_stop_ = msg->data;
+    if (emergency_stop_) {
+      emergency_stop_source_ = EM_STOP_SOURCE_SOFTWARE;
+    }
+    if (blackboard_) {
+      blackboard_->set<bool>("emergency_stop", emergency_stop_);
+    }
+  }
+
+  void hardwareEmergencyStopCallback(const std_msgs::msg::Bool::SharedPtr msg) {
+    emergency_stop_ = msg->data;
+    if (emergency_stop_) {
+      emergency_stop_source_ = EM_STOP_SOURCE_HARDWARE;
+    }
     if (blackboard_) {
       blackboard_->set<bool>("emergency_stop", emergency_stop_);
     }
@@ -142,6 +165,17 @@ private:
       old_result->message = "Preempted by new goal";
       active_goal_->abort(old_result);
       active_goal_.reset();
+    }
+
+    if (emergency_stop_ && emergency_stop_source_ == EM_STOP_SOURCE_SOFTWARE) {
+      RCLCPP_INFO(get_logger(), "Auto-clearing software emergency_stop on new goal");
+      emergency_stop_ = false;
+      if (blackboard_) {
+        blackboard_->set<bool>("emergency_stop", false);
+      }
+      std_msgs::msg::Bool cmd;
+      cmd.data = false;
+      emergency_stop_pub_->publish(cmd);
     }
 
     if (blackboard_) {
@@ -274,6 +308,8 @@ private:
   }
 
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr hardware_emergency_stop_sub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr emergency_stop_pub_;
   rclcpp::Publisher<husky_msgs::msg::RobotState>::SharedPtr state_pub_;
   rclcpp::Publisher<husky_msgs::msg::GoalEvent>::SharedPtr event_pub_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_pub_;
@@ -286,6 +322,7 @@ private:
   BT::Blackboard::Ptr blackboard_;
 
   bool emergency_stop_;
+  int emergency_stop_source_;
   bool waiting_;
   bool idle_;
   bool avoidance_enabled_;

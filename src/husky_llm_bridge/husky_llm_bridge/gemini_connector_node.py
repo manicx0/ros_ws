@@ -4,9 +4,11 @@ import os
 import urllib.request
 import urllib.error
 import yaml
+import math
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
+from nav_msgs.msg import Odometry
 from husky_msgs.msg import FleetState
 from husky_llm_bridge.fleet_state_util import format_fleet_state
 from husky_llm_bridge.waypoint_loader import WaypointLoader
@@ -49,10 +51,27 @@ class GeminiConnectorNode(Node):
 
         self.latest_fleet_state = None
         self.last_command = None
+        self.robot_poses = {}
+        for robot_id in self.valid_robots:
+            odom_topic = f'/{robot_id}/platform/odom/filtered'
+            self.create_subscription(
+                Odometry, odom_topic,
+                lambda msg, rid=robot_id: self.odom_callback(msg, rid),
+                10)
+            self.get_logger().info(f'Subscribed to odometry for {robot_id} on {odom_topic}')
         self.get_logger().info(f'Gemini connector initialized. Model: {self.model}')
 
     def fleet_state_callback(self, msg: FleetState):
         self.latest_fleet_state = msg
+
+    def odom_callback(self, msg: Odometry, robot_id: str):
+        pose = msg.pose.pose
+        yaw = 2.0 * math.atan2(pose.orientation.z, pose.orientation.w)
+        self.robot_poses[robot_id] = {
+            'x': pose.position.x,
+            'y': pose.position.y,
+            'yaw': yaw
+        }
 
     def _load_fleet_config(self, path):
         if not path:
@@ -99,12 +118,24 @@ class GeminiConnectorNode(Node):
         primary_robot = self.valid_robots[0] if self.valid_robots else 'unknown'
         waypoint_names = self.waypoint_loader.get_available_names()
         waypoint_names_str = ', '.join(waypoint_names) if waypoint_names else 'none'
+
+        odom_info = []
+        for robot_id in self.valid_robots:
+            pose = self.robot_poses.get(robot_id)
+            if pose:
+                odom_info.append(
+                    f'{robot_id}: x={pose["x"]:.2f}, y={pose["y"]:.2f}, yaw={pose["yaw"]:.2f} rad'
+                )
+            else:
+                odom_info.append(f'{robot_id}: no odometry data yet')
+        odom_str = '\n'.join(odom_info)
         
         return (
             "You are a fleet mission planner for outdoor Husky A200 robots.\n\n"
             f"Available robot IDs: {primary_robot} (primary), {', '.join(self.valid_robots[1:]) if len(self.valid_robots) > 1 else ''}\n\n"
             f"Available waypoint names: {waypoint_names_str}\n\n"
             f"Current fleet state:\n{fleet_state}\n\n"
+            f"Current robot positions (odometry):\n{odom_str}\n\n"
             f"User command:\n{command}\n\n"
             "Respond based on what the user is asking:\n\n"
             "1. If the user is asking a QUESTION (e.g., 'is the robot stuck?', 'what's the status?'), "
@@ -122,12 +153,22 @@ class GeminiConnectorNode(Node):
             '    {\n'
             '      "action": "navigate",\n'
             '      "robot_id": "<robot namespace from available list>",\n'
+            '      "waypoints": [{"x": <float>, "y": <float>, "yaw": <float>}]\n'
+            '    },\n'
+            '    {\n'
+            '      "action": "navigate",\n'
+            '      "robot_id": "<robot namespace from available list>",\n'
             '      "waypoint_name": "<name from available waypoint names>"\n'
             '    },\n'
             '    {\n'
             '      "action": "navigate",\n'
             '      "robot_id": "<robot namespace from available list>",\n'
             '      "waypoints": [{"lat": <float>, "lon": <float>}]\n'
+            '    },\n'
+            '    {\n'
+            '      "action": "navigate",\n'
+            '      "robot_id": "<robot namespace from available list>",\n'
+            '      "relative": {"forward": <float>, "right": <float>}\n'
             '    },\n'
             '    {\n'
             '      "action": "set_state",\n'
@@ -158,7 +199,8 @@ class GeminiConnectorNode(Node):
             '- action must be "navigate", "set_state", "rotate", "emergency_stop", "clear_emergency_stop", or "go_home"\n'
             '- robot_id MUST be one of the available robot IDs listed above\n'
             '- If the user says "the robot", "send robot", or doesn\'t specify which robot, use the primary robot\n'
-            '- navigate: use "waypoint_name" for named locations, or "waypoints" with {x,y} odom coords or {lat,lon} GPS coords. priority 1-5 (optional, default 3).\n'
+            '- navigate: provide one of: "waypoints" [{x,y} or {x,y,yaw} or {lat,lon}], "waypoint_name", or "relative" {"forward": meters, "right": meters}. yaw is optional (radians, robot faces that direction at goal). priority 1-5 (optional, default 3).\n'
+            '- "relative" moves: use for time/distance commands like "move forward 2 meters" or "go forward for 3 seconds". The bridge computes absolute waypoints from odometry. Do NOT use "waypoints" with computed coordinates for time/distance commands — use "relative" instead with forward/right in meters. At 0.45 m/s, 3 seconds = 1.35 meters forward.\n'
             '- set_state: at least one of waiting or avoidance_enabled as boolean.\n'
             '- rotate: angle_deg required (float, degrees, positive=CCW, negative=CW). Use for "turn", "rotate", "spin" commands.\n'
             '- emergency_stop: immediately stops the robot. Use for "stop", "halt", "emergency stop", "abort" commands.\n'

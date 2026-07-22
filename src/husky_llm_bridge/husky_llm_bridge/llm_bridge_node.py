@@ -7,10 +7,13 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import String, Float64, Bool
+from nav_msgs.msg import Odometry
 from husky_msgs.msg import FleetState, FleetGoal, GoalEvent
 from husky_msgs.action import FleetNavigate
 from husky_msgs.srv import FleetSetState
 from husky_llm_bridge.waypoint_loader import WaypointLoader
+
+DEFAULT_SPEED = 0.45  # m/s, matching pure_pursuit linear_speed
 
 
 class LLMBridgeNode(Node):
@@ -23,6 +26,7 @@ class LLMBridgeNode(Node):
         fleet_config_path = self.get_parameter('fleet_config_path').value
         waypoints_config_path = self.get_parameter('waypoints_config_path').value
         self.home_poses = self._load_home_poses(fleet_config_path)
+        self.valid_robots = list(self.home_poses.keys())
         self.waypoint_loader = WaypointLoader(waypoints_config_path)
 
         self.fleet_state_sub = self.create_subscription(
@@ -48,8 +52,29 @@ class LLMBridgeNode(Node):
 
         self.fleet_navigate_client = ActionClient(self, FleetNavigate, '/fleet/fleet_navigate')
         self.fleet_set_state_client = self.create_client(FleetSetState, '/fleet/set_fleet_state')
-        self.rotation_pubs = {}  # robot_id -> publisher
-        self.emergency_stop_pubs = {}  # robot_id -> publisher
+        self.rotation_pubs = {}
+        self.emergency_stop_pubs = {}
+
+        self.robot_poses = {}
+        for robot_id in self.valid_robots:
+            odom_topic = f'/{robot_id}/platform/odom/filtered'
+            self.create_subscription(
+                Odometry, odom_topic,
+                lambda msg, rid=robot_id: self.odom_callback(msg, rid),
+                10)
+            self.get_logger().info(f'Subscribed to odometry for {robot_id} on {odom_topic}')
+
+        self.get_logger().info('Waiting for initial odometry...')
+        for robot_id in self.valid_robots:
+            if robot_id not in self.robot_poses:
+                for _ in range(50):
+                    rclpy.spin_once(self, timeout_sec=0.1)
+                    if robot_id in self.robot_poses:
+                        break
+                if robot_id in self.robot_poses:
+                    self.get_logger().info(f'Odometry received for {robot_id}')
+                else:
+                    self.get_logger().warn(f'No odometry from {robot_id} after 5s')
 
         self.latest_fleet_state = None
         self.get_logger().info('LLM bridge initialized')
@@ -81,6 +106,15 @@ class LLMBridgeNode(Node):
 
     def goal_event_callback(self, msg: GoalEvent):
         self.get_logger().info(f'Goal event: robot={msg.robot_id}, type={msg.type}')
+
+    def odom_callback(self, msg: Odometry, robot_id: str):
+        pose = msg.pose.pose
+        yaw = 2.0 * math.atan2(pose.orientation.z, pose.orientation.w)
+        self.robot_poses[robot_id] = {
+            'x': pose.position.x,
+            'y': pose.position.y,
+            'yaw': yaw
+        }
 
     def log_fleet_state(self, msg: FleetState):
         for i, robot_id in enumerate(msg.robot_ids):
@@ -140,21 +174,31 @@ class LLMBridgeNode(Node):
 
         goal = FleetNavigate.Goal()
         for mission in missions:
+            relative = mission.get('relative')
+            if relative:
+                resolved = self._resolve_relative(mission)
+            else:
+                resolved = self._resolve_waypoint(mission)
+
+            if resolved is None:
+                self.get_logger().error(f'Could not resolve waypoint for {mission["robot_id"]}')
+                continue
+
+            x, y, yaw = resolved
             fleet_goal = FleetGoal()
             fleet_goal.robot_id = mission['robot_id']
 
             pose = PoseStamped()
             pose.header.frame_id = 'odom'
-
-            x, y = self._resolve_waypoint(mission)
-            if x is None or y is None:
-                self.get_logger().error(f'Could not resolve waypoint for {mission["robot_id"]}')
-                continue
-
             pose.pose.position.x = float(x)
             pose.pose.position.y = float(y)
             pose.pose.position.z = 0.0
-            pose.pose.orientation.w = 1.0
+
+            if yaw is not None:
+                pose.pose.orientation.z = math.sin(yaw / 2.0)
+                pose.pose.orientation.w = math.cos(yaw / 2.0)
+            else:
+                pose.pose.orientation.w = 1.0
 
             fleet_goal.target_pose = pose
             goal.goals.append(fleet_goal)
@@ -172,25 +216,53 @@ class LLMBridgeNode(Node):
         if waypoint_name:
             wp = self.waypoint_loader.get_waypoint(waypoint_name)
             if wp:
-                return wp.get('x'), wp.get('y')
+                return wp.get('x'), wp.get('y'), wp.get('yaw')
             self.get_logger().error(f'Unknown waypoint name: {waypoint_name}')
-            return None, None
+            return None
 
         if waypoint_names:
             wp = self.waypoint_loader.get_waypoint(waypoint_names[0])
             if wp:
-                return wp.get('x'), wp.get('y')
+                return wp.get('x'), wp.get('y'), wp.get('yaw')
             self.get_logger().error(f'Unknown waypoint name: {waypoint_names[0]}')
-            return None, None
+            return None
 
         if waypoints:
             wp = waypoints[0]
             if 'x' in wp and 'y' in wp:
-                return wp['x'], wp['y']
+                return wp['x'], wp['y'], wp.get('yaw')
             if 'lat' in wp and 'lon' in wp:
-                return self._gps_to_xy(wp['lat'], wp['lon'])
+                x, y = self._gps_to_xy(wp['lat'], wp['lon'])
+                return x, y, wp.get('yaw')
 
-        return None, None
+        return None
+
+    def _resolve_relative(self, mission):
+        robot_id = mission['robot_id']
+        pose = self.robot_poses.get(robot_id)
+        if pose:
+            cx = pose['x']
+            cy = pose['y']
+            cyaw = pose['yaw']
+        else:
+            home = self.home_poses.get(robot_id)
+            if home:
+                self.get_logger().warn(f'No odometry for {robot_id}, using home pose as fallback for relative move')
+                cx = home['x']
+                cy = home['y']
+                cyaw = home['yaw']
+            else:
+                self.get_logger().error(f'No odometry or home pose for {robot_id}, cannot resolve relative move')
+                return None
+
+        relative = mission.get('relative', {})
+        forward = relative.get('forward', 0.0)
+        right = relative.get('right', 0.0)
+
+        x = cx + forward * math.cos(cyaw) + right * math.cos(cyaw - math.pi / 2.0)
+        y = cy + forward * math.sin(cyaw) + right * math.sin(cyaw - math.pi / 2.0)
+
+        return x, y, mission.get('relative_yaw')
 
     def _gps_to_xy(self, lat_deg, lon_deg):
         origin = self.waypoint_loader.gps_origin

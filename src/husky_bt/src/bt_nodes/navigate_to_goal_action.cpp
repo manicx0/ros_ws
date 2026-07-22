@@ -3,6 +3,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "husky_msgs/msg/goal_event.hpp"
 
@@ -12,6 +13,7 @@ public:
     : BT::StatefulActionNode(name, config), node_(node) {
       goal_pub_ = node_->create_publisher<geometry_msgs::msg::PoseStamped>("goal_waypoints", 10);
       cmd_pub_ = node_->create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", 10);
+      clear_path_pub_ = node_->create_publisher<nav_msgs::msg::Path>("global_path", 10);
       event_pub_ = node_->create_publisher<husky_msgs::msg::GoalEvent>("/fleet/goal_events", 10);
       odom_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
         "platform/odom/filtered", 10,
@@ -70,6 +72,13 @@ private:
   }
 
   void onSuccess() {
+    stopRobot();
+
+    nav_msgs::msg::Path empty_path;
+    empty_path.header.stamp = node_->now();
+    empty_path.header.frame_id = "odom";
+    clear_path_pub_->publish(empty_path);
+
     husky_msgs::msg::GoalEvent event;
     event.type = husky_msgs::msg::GoalEvent::GOAL_REACHED;
     event.robot_id = node_->get_namespace();
@@ -85,6 +94,7 @@ private:
   geometry_msgs::msg::PoseStamped goal_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pub_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr clear_path_pub_;
   rclcpp::Publisher<husky_msgs::msg::GoalEvent>::SharedPtr event_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   bool obstacle_detected_ = false;

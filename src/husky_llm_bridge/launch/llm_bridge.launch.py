@@ -12,7 +12,13 @@ def generate_launch_description():
     connector_arg = DeclareLaunchArgument(
         'connector',
         default_value='gemini_connector_node.py',
-        description='Which LLM connector to launch: gemini_connector_node.py, deepseek_connector_node.py, or ollama_connector_node.py'
+        description='Which LLM connector to launch: gemini_connector_node.py (Gemini), deepseek_connector_node.py (OpenCode Go), or ollama_connector_node.py (local Ollama)'
+    )
+
+    model_arg = DeclareLaunchArgument(
+        'model',
+        default_value='',
+        description='Model name override for the LLM connector (e.g. deepseek-v4-pro)'
     )
 
     include_fleet_manager_arg = DeclareLaunchArgument(
@@ -54,7 +60,7 @@ def generate_launch_description():
         executable=LaunchConfiguration('connector'),
         name='llm_connector',
         output='screen',
-        parameters=[{'fleet_config_path': fleet_config_path, 'waypoints_config_path': waypoints_config_path}]
+        parameters=[{'fleet_config_path': fleet_config_path, 'waypoints_config_path': waypoints_config_path, 'model': LaunchConfiguration('model')}]
     )
 
     fleet_manager_launch = IncludeLaunchDescription(
@@ -70,6 +76,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         connector_arg,
+        model_arg,
         include_fleet_manager_arg,
         fleet_manager_launch,
         bridge_node,

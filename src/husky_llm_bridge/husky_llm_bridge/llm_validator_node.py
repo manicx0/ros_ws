@@ -160,9 +160,10 @@ class LLMValidatorNode(Node):
         waypoints = mission.get('waypoints')
         waypoint_name = mission.get('waypoint_name')
         waypoint_names = mission.get('waypoint_names')
+        relative = mission.get('relative')
 
-        if waypoints is None and waypoint_name is None and waypoint_names is None:
-            return f'{prefix}: must have "waypoints", "waypoint_name", or "waypoint_names"'
+        if waypoints is None and waypoint_name is None and waypoint_names is None and relative is None:
+            return f'{prefix}: must have "waypoints", "waypoint_name", "waypoint_names", or "relative"'
 
         if waypoints is not None:
             if not isinstance(waypoints, list) or len(waypoints) == 0:
@@ -193,6 +194,16 @@ class LLMValidatorNode(Node):
                         return f'{prefix}: waypoint[{j}] lat must be between -90 and 90'
                     if lon < -180 or lon > 180:
                         return f'{prefix}: waypoint[{j}] lon must be between -180 and 180'
+
+        if relative is not None:
+            if not isinstance(relative, dict):
+                return f'{prefix}: "relative" must be an object'
+            forward = relative.get('forward', 0.0)
+            right = relative.get('right', 0.0)
+            if not isinstance(forward, (int, float)):
+                return f'{prefix}: relative.forward must be numeric'
+            if not isinstance(right, (int, float)):
+                return f'{prefix}: relative.right must be numeric'
 
         if waypoint_name is not None:
             if not isinstance(waypoint_name, str) or not waypoint_name:

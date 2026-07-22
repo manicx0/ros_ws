@@ -26,3 +26,7 @@ waypoints:
   point_d:
     name: "Storage"
     odom: {x: -10.0, y: -10.0}
+  
+  test_point:
+    name: "Test GPS Waypoint"
+    gps: {lat: 47.398000, lon: 8.546000}

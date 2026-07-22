@@ -35,21 +35,13 @@ def generate_launch_description():
 
         Node(
             package='husky_nav',
-            executable='pure_pursuit_node',
-            name='pure_pursuit',
+            executable='vfh_planner_node',
+            name='vfh_planner',
             output='screen',
             parameters=[
                 os.path.join(husky_bringup_dir, 'config', 'pure_pursuit_params.yaml'),
                 {'use_sim_time': use_sim_time},
             ],
-        ),
-
-        Node(
-            package='husky_nav',
-            executable='path_planner_node',
-            name='path_planner',
-            output='screen',
-            parameters=[{'use_sim_time': use_sim_time}],
         ),
 
         Node(

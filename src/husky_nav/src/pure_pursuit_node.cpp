@@ -37,7 +37,7 @@ public:
     this->get_parameter("rotation_timeout", rotation_timeout_);
 
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-      "platform/odom/filtered", 10, std::bind(&PurePursuitNode::odomCallback, this, std::placeholders::_1));
+      "platform/odom", 10, std::bind(&PurePursuitNode::odomCallback, this, std::placeholders::_1));
 
     path_sub_ = this->create_subscription<nav_msgs::msg::Path>(
       "global_path", 10, std::bind(&PurePursuitNode::pathCallback, this, std::placeholders::_1));
@@ -50,6 +50,9 @@ public:
 
     recovery_sub_ = this->create_subscription<std_msgs::msg::Bool>(
       "recovery_active", 10, std::bind(&PurePursuitNode::recoveryCallback, this, std::placeholders::_1));
+
+    emergency_stop_sub_ = this->create_subscription<std_msgs::msg::Bool>(
+      "emergency_stop", 10, std::bind(&PurePursuitNode::emergencyStopCallback, this, std::placeholders::_1));
 
     cmd_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", 10);
 
@@ -90,6 +93,15 @@ private:
 
   void recoveryCallback(const std_msgs::msg::Bool::SharedPtr msg) {
     recovery_active_ = msg->data;
+  }
+
+  void emergencyStopCallback(const std_msgs::msg::Bool::SharedPtr msg) {
+    emergency_stop_ = msg->data;
+    if (emergency_stop_) {
+      current_path_.clear();
+      recovery_active_ = false;
+      rotation_active_ = false;
+    }
   }
 
   enum class ObstacleType { CLEAR, POLE, WALL };
@@ -220,6 +232,14 @@ private:
   }
 
   void controlLoop() {
+    if (emergency_stop_) {
+      geometry_msgs::msg::TwistStamped cmd;
+      cmd.header.stamp = this->now();
+      cmd.twist.linear.x = 0.0;
+      cmd.twist.angular.z = 0.0;
+      cmd_pub_->publish(cmd);
+      return;
+    }
     if (recovery_active_) return;
     if (current_path_.empty() && !rotation_active_) return;
 
@@ -265,6 +285,18 @@ private:
           cmd.twist.linear.x = linear_speed_ * avoidance_speed_factor_;
         }
       }
+
+      if (!current_path_.empty()) {
+        auto& last = current_path_.back();
+        double dx = last.x - robot_pose_.x;
+        double dy = last.y - robot_pose_.y;
+        double dist_to_end = std::sqrt(dx * dx + dy * dy);
+        if (dist_to_end < 0.3) {
+          cmd.twist.linear.x = 0.0;
+          cmd.twist.angular.z = 0.0;
+          current_path_.clear();
+        }
+      }
     }
 
     cmd_pub_->publish(cmd);
@@ -294,12 +326,14 @@ private:
   rclcpp::Time rotation_start_time_;
   double rotation_start_yaw_ = 0.0;
   bool recovery_active_ = false;
+  bool emergency_stop_ = false;
 
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr rotation_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr recovery_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_sub_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
