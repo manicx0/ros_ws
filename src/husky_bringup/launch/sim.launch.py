@@ -65,7 +65,7 @@ def generate_launch_description():
         choices=['true', 'false'],
         description='Use simulation time')
     world_arg = DeclareLaunchArgument(
-        'world', default_value='warehouse',
+        'world', default_value='solar_farm',
         description='Gazebo world')
     rviz_arg = DeclareLaunchArgument(
         'rviz', default_value='false',

@@ -3,8 +3,8 @@
 # GPS coordinates are converted to odom using the gps_origin below
 
 gps_origin:
-  lat: 47.397742
-  lon: 8.545594
+  lat: 50.109461
+  lon: -97.318978
 
 waypoints:
   origin:
@@ -29,4 +29,4 @@ waypoints:
   
   test_point:
     name: "Test GPS Waypoint"
-    gps: {lat: 47.398000, lon: 8.546000}
+    gps: {lat: 50.109661, lon: -97.318678}
