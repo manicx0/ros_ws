@@ -178,6 +178,14 @@ private:
       emergency_stop_pub_->publish(cmd);
     }
 
+    if (waiting_) {
+      RCLCPP_INFO(get_logger(), "Auto-clearing waiting flag on new goal");
+      waiting_ = false;
+      if (blackboard_) {
+        blackboard_->set<bool>("waiting", false);
+      }
+    }
+
     if (blackboard_) {
       blackboard_->set<geometry_msgs::msg::PoseStamped>("target_pose", handle->get_goal()->target_pose);
       blackboard_->set<bool>("has_goal", true);
