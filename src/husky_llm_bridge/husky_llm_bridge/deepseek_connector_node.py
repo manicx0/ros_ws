@@ -19,20 +19,18 @@ class DeepSeekConnectorNode(Node):
         super().__init__('deepseek_connector_node')
 
         self.declare_parameter('api_key', '')
-        self.declare_parameter('base_url', 'https://opencode.ai/zen/v1/chat/completions')
-        self.declare_parameter('model', 'deepseek-v4-flash')
+        self.declare_parameter('model', 'deepseek-chat')
         self.declare_parameter('fleet_config_path', '')
         self.declare_parameter('waypoints_config_path', '')
 
-        self.api_key = self.get_parameter('api_key').value or os.environ.get('OPENCODE_GO_API_KEY', '')
+        self.api_key = self.get_parameter('api_key').value or os.environ.get('DEEPSEEK_API_KEY', '')
         self.api_key_from_env = not self.api_key
-        self.base_url = self.get_parameter('base_url').value
         self.model = self.get_parameter('model').value
         self.valid_robots = self._load_fleet_config(self.get_parameter('fleet_config_path').value)
         self.waypoint_loader = WaypointLoader(self.get_parameter('waypoints_config_path').value)
 
         if not self.api_key:
-            self.get_logger().warn('No OPENCODE_GO_API_KEY set. Connector will fail on first command.')
+            self.get_logger().warn('No DEEPSEEK_API_KEY set. Connector will fail on first command.')
 
         self.command_sub = self.create_subscription(
             String,
@@ -61,7 +59,7 @@ class DeepSeekConnectorNode(Node):
                 lambda msg, rid=robot_id: self.odom_callback(msg, rid),
                 10)
             self.get_logger().info(f'Subscribed to odometry for {robot_id} on {odom_topic}')
-        self.get_logger().info(f'OpenCode Go connector initialized. URL: {self.base_url}, Model: {self.model}')
+        self.get_logger().info(f'DeepSeek Official connector initialized. Model: {self.model}')
 
     def fleet_state_callback(self, msg: FleetState):
         self.latest_fleet_state = msg
@@ -99,10 +97,10 @@ class DeepSeekConnectorNode(Node):
         self.last_command = command
 
         if self.api_key_from_env:
-            self.api_key = os.environ.get('OPENCODE_GO_API_KEY', '')
+            self.api_key = os.environ.get('DEEPSEEK_API_KEY', '')
 
         if not self.api_key:
-            self._publish_status('No OPENCODE_GO_API_KEY configured')
+            self._publish_status('No DEEPSEEK_API_KEY configured')
             return
 
         fleet_state_json = format_fleet_state(self.latest_fleet_state)
@@ -116,7 +114,6 @@ class DeepSeekConnectorNode(Node):
             self._publish_status(f'DeepSeek API error: {e}')
 
     def _build_prompt(self, command, fleet_state):
-        valid_robots_str = ', '.join(self.valid_robots) if self.valid_robots else 'unknown'
         primary_robot = self.valid_robots[0] if self.valid_robots else 'unknown'
         waypoint_names = self.waypoint_loader.get_available_names()
         waypoint_names_str = ', '.join(waypoint_names) if waypoint_names else 'none'
@@ -131,7 +128,7 @@ class DeepSeekConnectorNode(Node):
             else:
                 odom_info.append(f'{robot_id}: no odometry data yet')
         odom_str = '\n'.join(odom_info)
-        
+
         return (
             "You are a fleet mission planner for outdoor Husky A200 robots.\n\n"
             f"Available robot IDs: {primary_robot} (primary), {', '.join(self.valid_robots[1:]) if len(self.valid_robots) > 1 else ''}\n\n"
@@ -215,14 +212,14 @@ class DeepSeekConnectorNode(Node):
         payload = json.dumps({
             'model': self.model,
             'messages': [
-                {'role': 'user', 'content': '/no_think\n' + prompt}
+                {'role': 'user', 'content': prompt}
             ],
             'stream': False,
             'temperature': 0.0,
         }).encode('utf-8')
 
         req = urllib.request.Request(
-            self.base_url,
+            'https://api.deepseek.com/v1/chat/completions',
             data=payload,
             headers={
                 'Content-Type': 'application/json',
@@ -236,12 +233,12 @@ class DeepSeekConnectorNode(Node):
 
         choices = body.get('choices', [])
         if not choices:
-            raise RuntimeError('No choices in OpenCode Go response')
+            raise RuntimeError('No choices in DeepSeek response')
 
         message = choices[0].get('message', {})
         content = message.get('content', '')
         if not content:
-            raise RuntimeError('No content in OpenCode Go response')
+            raise RuntimeError('No content in DeepSeek response')
 
         return content.strip()
 

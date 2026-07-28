@@ -18,6 +18,7 @@ public:
     this->declare_parameter<double>("max_speed", 0.45);
     this->declare_parameter<double>("min_speed", 0.15);
     this->declare_parameter<double>("max_angular_speed", 0.8);
+    this->declare_parameter<double>("heading_gain", 2.0);
     this->declare_parameter<int>("num_sectors", 72);
     this->declare_parameter<double>("min_gap_width", 0.5);
     this->declare_parameter<double>("obstacle_range", 3.0);
@@ -30,6 +31,7 @@ public:
     this->get_parameter("max_speed", max_speed_);
     this->get_parameter("min_speed", min_speed_);
     this->get_parameter("max_angular_speed", max_angular_speed_);
+    this->get_parameter("heading_gain", heading_gain_);
     this->get_parameter("num_sectors", num_sectors_);
     this->get_parameter("min_gap_width", min_gap_width_);
     this->get_parameter("obstacle_range", obstacle_range_);
@@ -40,7 +42,7 @@ public:
     this->get_parameter("rotation_timeout", rotation_timeout_);
 
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-      "platform/odom", 10, std::bind(&VFHPlannerNode::odomCallback, this, std::placeholders::_1));
+      "platform/odom/filtered", 10, std::bind(&VFHPlannerNode::odomCallback, this, std::placeholders::_1));
 
     goal_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
       "goal_waypoints", 10, std::bind(&VFHPlannerNode::goalCallback, this, std::placeholders::_1));
@@ -172,7 +174,7 @@ private:
 
       cmd.twist.linear.x = output.linear_speed;
       cmd.twist.angular.z = std::clamp(
-        output.linear_speed * std::sin(output.steering_angle) / 1.0,
+        heading_gain_ * output.steering_angle,
         -max_angular_speed_, max_angular_speed_);
 
       publishVisualizationPath(output.steering_angle);
@@ -238,6 +240,7 @@ private:
   double max_speed_;
   double min_speed_;
   double max_angular_speed_;
+  double heading_gain_;
   int num_sectors_;
   double min_gap_width_;
   double obstacle_range_;

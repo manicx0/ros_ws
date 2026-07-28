@@ -12,7 +12,7 @@ def generate_launch_description():
     connector_arg = DeclareLaunchArgument(
         'connector',
         default_value='gemini_connector_node.py',
-        description='Which LLM connector to launch: gemini_connector_node.py (Gemini), deepseek_connector_node.py (OpenCode Go), or ollama_connector_node.py (local Ollama)'
+        description='Which LLM connector to launch: gemini_connector_node.py (Gemini), deepseek_connector_node.py (DeepSeek official API), or ollama_connector_node.py (local Ollama)'
     )
 
     model_arg = DeclareLaunchArgument(
