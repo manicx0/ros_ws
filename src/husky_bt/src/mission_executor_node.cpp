@@ -1,3 +1,4 @@
+#include <cmath>
 #include <memory>
 #include <string>
 #include "rclcpp/rclcpp.hpp"
@@ -8,21 +9,20 @@
 #include "std_msgs/msg/bool.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
+#include "nav_msgs/msg/odometry.hpp"
 #include "husky_msgs/msg/robot_state.hpp"
 #include "husky_msgs/msg/goal_event.hpp"
 #include "husky_msgs/srv/set_robot_state.hpp"
+#include "sensor_msgs/msg/nav_sat_fix.hpp"
 #include "husky_msgs/action/navigate_to.hpp"
 
 #include "bt_nodes/navigate_to_goal_action.cpp"
-#include "bt_nodes/obstacle_check_condition.cpp"
 #include "bt_nodes/recovery_rotate_action.cpp"
 #include "bt_nodes/recovery_reverse_action.cpp"
 #include "bt_nodes/recovery_failed_action.cpp"
 #include "bt_nodes/emergency_stop_condition.cpp"
 #include "bt_nodes/waiting_condition.cpp"
 #include "bt_nodes/idle_monitor.cpp"
-#include "bt_nodes/avoidance_condition.cpp"
-#include "bt_nodes/stop_and_wait.cpp"
 #include "bt_nodes/stuck_check_condition.cpp"
 #include "bt_nodes/gps_fix_check_condition.cpp"
 
@@ -49,6 +49,14 @@ public:
     event_pub_ = create_publisher<husky_msgs::msg::GoalEvent>("/fleet/goal_events", 10);
     cmd_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", 10);
 
+    odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+      "platform/odom", 10,
+      std::bind(&MissionExecutorNode::odomCallback, this, std::placeholders::_1));
+
+    gps_sub_ = create_subscription<sensor_msgs::msg::NavSatFix>(
+      "sensors/gps_0/fix", 10,
+      std::bind(&MissionExecutorNode::gpsCallback, this, std::placeholders::_1));
+
     set_state_srv_ = create_service<husky_msgs::srv::SetRobotState>(
       "set_robot_state",
       std::bind(&MissionExecutorNode::setStateCallback, this, std::placeholders::_1, std::placeholders::_2));
@@ -71,6 +79,7 @@ public:
     avoidance_enabled_ = true;
     mission_active_ = false;
     waiting_for_result_ = false;
+    has_odom_ = false;
   }
 
   void initialize(BT::Tree&& tree) {
@@ -108,6 +117,24 @@ private:
     if (blackboard_) {
       blackboard_->set<bool>("emergency_stop", emergency_stop_);
     }
+  }
+
+  void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
+    odom_x_ = msg->pose.pose.position.x;
+    odom_y_ = msg->pose.pose.position.y;
+    const auto& q = msg->pose.pose.orientation;
+    odom_yaw_ = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+                           1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    odom_linear_vel_ = msg->twist.twist.linear.x;
+    odom_angular_vel_ = msg->twist.twist.angular.z;
+    has_odom_ = true;
+  }
+
+  void gpsCallback(const sensor_msgs::msg::NavSatFix::SharedPtr msg) {
+    gps_latitude_ = msg->latitude;
+    gps_longitude_ = msg->longitude;
+    gps_fix_valid_ = (msg->status.status >= 0);
+    has_gps_ = true;
   }
 
   void setStateCallback(
@@ -213,6 +240,22 @@ private:
     state.idle = idle_;
     state.avoidance_enabled = avoidance_enabled_;
     state.mission_active = mission_active_;
+
+    state.odom_valid = has_odom_;
+    if (has_odom_) {
+      state.position_x = odom_x_;
+      state.position_y = odom_y_;
+      state.position_yaw = odom_yaw_;
+      state.linear_velocity = odom_linear_vel_;
+      state.angular_velocity = odom_angular_vel_;
+    }
+
+    if (has_gps_) {
+      state.gps_latitude = gps_latitude_;
+      state.gps_longitude = gps_longitude_;
+      state.gps_fix_valid = gps_fix_valid_;
+    }
+
     state_pub_->publish(state);
   }
 
@@ -317,6 +360,8 @@ private:
 
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr hardware_emergency_stop_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr gps_sub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr emergency_stop_pub_;
   rclcpp::Publisher<husky_msgs::msg::RobotState>::SharedPtr state_pub_;
   rclcpp::Publisher<husky_msgs::msg::GoalEvent>::SharedPtr event_pub_;
@@ -337,6 +382,18 @@ private:
   bool mission_active_;
   bool waiting_for_result_;
   std::shared_ptr<GoalHandleNavigateTo> active_goal_;
+
+  bool has_odom_;
+  double odom_x_;
+  double odom_y_;
+  double odom_yaw_;
+  double odom_linear_vel_;
+  double odom_angular_vel_;
+
+  bool has_gps_{false};
+  double gps_latitude_{0.0};
+  double gps_longitude_{0.0};
+  bool gps_fix_valid_{false};
 };
 
 int main(int argc, char** argv) {
@@ -346,15 +403,12 @@ int main(int argc, char** argv) {
   BT::BehaviorTreeFactory factory;
 
   factory.registerNodeType<NavigateToGoal>("NavigateToGoal", node);
-  factory.registerNodeType<ObstacleCheck>("ObstacleCheck", node);
   factory.registerNodeType<RecoveryRotate>("RecoveryRotate", node);
   factory.registerNodeType<RecoveryReverse>("RecoveryReverse", node);
   factory.registerNodeType<RecoveryFailed>("RecoveryFailed", node);
   factory.registerNodeType<EmergencyStopCondition>("EmergencyStopCondition", node);
   factory.registerNodeType<WaitingCondition>("WaitingCondition", node);
   factory.registerNodeType<IdleMonitor>("IdleMonitor", node);
-  factory.registerNodeType<AvoidanceEnabledCondition>("AvoidanceEnabledCondition", node);
-  factory.registerNodeType<StopAndWait>("StopAndWait", node);
   factory.registerNodeType<StuckCheck>("StuckCheck", node);
   factory.registerNodeType<GpsFixCheck>("GpsFixCheck", node);
 

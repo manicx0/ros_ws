@@ -9,12 +9,13 @@
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_msgs/msg/float64.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "husky_msgs/msg/goal_reached.hpp"
 #include "husky_nav/vfh_planner.hpp"
 #include "tf2/utils.hpp"
 
 class VFHPlannerNode : public rclcpp::Node {
 public:
-  VFHPlannerNode() : Node("vfh_planner_node") {
+  VFHPlannerNode() : Node("vfh_planner_node"), start_time_(this->now()) {
     this->declare_parameter<double>("max_speed", 0.45);
     this->declare_parameter<double>("min_speed", 0.15);
     this->declare_parameter<double>("max_angular_speed", 0.8);
@@ -27,6 +28,8 @@ public:
     this->declare_parameter<double>("rotation_speed", 0.4);
     this->declare_parameter<double>("rotation_tolerance", 0.1);
     this->declare_parameter<double>("rotation_timeout", 10.0);
+    this->declare_parameter<double>("scan_timeout", 3.0);
+    this->declare_parameter<double>("facing_goal_threshold", 0.3);
 
     this->get_parameter("max_speed", max_speed_);
     this->get_parameter("min_speed", min_speed_);
@@ -40,9 +43,11 @@ public:
     this->get_parameter("rotation_speed", rotation_speed_);
     this->get_parameter("rotation_tolerance", rotation_tolerance_);
     this->get_parameter("rotation_timeout", rotation_timeout_);
+    this->get_parameter("scan_timeout", scan_timeout_);
+    this->get_parameter("facing_goal_threshold", facing_goal_threshold_);
 
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-      "platform/odom/filtered", 10, std::bind(&VFHPlannerNode::odomCallback, this, std::placeholders::_1));
+      "platform/odom", 10, std::bind(&VFHPlannerNode::odomCallback, this, std::placeholders::_1));
 
     goal_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
       "goal_waypoints", 10, std::bind(&VFHPlannerNode::goalCallback, this, std::placeholders::_1));
@@ -61,6 +66,7 @@ public:
 
     cmd_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", 10);
     path_pub_ = this->create_publisher<nav_msgs::msg::Path>("global_path", 10);
+    goal_reached_pub_ = this->create_publisher<husky_msgs::msg::GoalReached>("vfh_goal_reached", 10);
 
     timer_ = this->create_wall_timer(
       std::chrono::milliseconds(50), std::bind(&VFHPlannerNode::controlLoop, this));
@@ -83,6 +89,9 @@ private:
     goal_.x = msg->pose.position.x;
     goal_.y = msg->pose.position.y;
     has_goal_ = true;
+    facing_goal_ = true;
+    publishGoalReached(false);
+    RCLCPP_INFO(get_logger(), "GOAL received: (%.2f, %.2f)", goal_.x, goal_.y);
   }
 
   void scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
@@ -112,10 +121,79 @@ private:
   void controlLoop() {
     if (emergency_stop_) {
       publishZeroVelocity();
+      RCLCPP_WARN(get_logger(), "EXIT: emergency_stop active");
       return;
     }
-    if (recovery_active_) return;
-    if (!has_goal_ && !rotation_active_) return;
+    if (recovery_active_) {
+      RCLCPP_WARN(get_logger(), "EXIT: recovery_active, yielding");
+      return;
+    }
+    if (!has_goal_ && !rotation_active_) {
+      RCLCPP_DEBUG(get_logger(), "EXIT: no goal and no rotation active");
+      return;
+    }
+
+    // Check if we have scan data
+    bool has_scan = (latest_scan_ != nullptr);
+    bool scan_timeout_exceeded = (this->now() - start_time_).seconds() > scan_timeout_;
+
+    // If no scan data but timeout exceeded, drive blind with reduced speed
+    if (!has_scan && scan_timeout_exceeded) {
+      if (has_goal_) {
+        double dx = goal_.x - robot_pose_.x;
+        double dy = goal_.y - robot_pose_.y;
+        double goal_distance = std::hypot(dx, dy);
+
+        if (goal_distance < goal_proximity_) {
+          has_goal_ = false;
+          publishGoalReached(true);
+          publishZeroVelocity();
+          publishEmptyPath();
+          return;
+        }
+
+        double goal_bearing_world = std::atan2(dy, dx);
+        double goal_bearing_robot = normalizeAngle(goal_bearing_world - robot_pose_.theta);
+
+        geometry_msgs::msg::TwistStamped cmd;
+        cmd.header.stamp = this->now();
+
+        if (facing_goal_) {
+          if (std::abs(goal_bearing_robot) > facing_goal_threshold_) {
+            cmd.twist.linear.x = 0.0;
+            cmd.twist.angular.z = std::clamp(
+              heading_gain_ * goal_bearing_robot,
+              -max_angular_speed_, max_angular_speed_);
+            RCLCPP_INFO(get_logger(),
+              "FACING (blind): bearing=%.2f rad  cmd_angular=%.2f",
+              goal_bearing_robot, cmd.twist.angular.z);
+            cmd_pub_->publish(cmd);
+            publishVisualizationPath(goal_bearing_robot);
+            return;
+          }
+          facing_goal_ = false;
+          RCLCPP_INFO(get_logger(), "FACING: aligned at bearing=%.2f rad", goal_bearing_robot);
+        }
+
+        cmd.twist.linear.x = min_speed_;
+        cmd.twist.angular.z = std::clamp(
+          heading_gain_ * goal_bearing_robot,
+          -max_angular_speed_, max_angular_speed_);
+        RCLCPP_WARN(get_logger(),
+          "BLIND_DRIVE: bearing_robot=%.2f rad  dist=%.2f  cmd=(%.2f, %.2f)",
+          goal_bearing_robot, goal_distance, cmd.twist.linear.x, cmd.twist.angular.z);
+        cmd_pub_->publish(cmd);
+
+        publishVisualizationPath(goal_bearing_robot);
+      }
+      return;
+    }
+
+    // If no scan data and timeout not exceeded, wait
+    if (!has_scan) {
+      publishZeroVelocity();
+      return;
+    }
 
     geometry_msgs::msg::TwistStamped cmd;
     cmd.header.stamp = this->now();
@@ -140,6 +218,7 @@ private:
 
       if (goal_distance < goal_proximity_) {
         has_goal_ = false;
+        publishGoalReached(true);
         publishZeroVelocity();
         publishEmptyPath();
         return;
@@ -147,6 +226,28 @@ private:
 
       double goal_bearing_world = std::atan2(dy, dx);
       double goal_bearing_robot = normalizeAngle(goal_bearing_world - robot_pose_.theta);
+      RCLCPP_INFO(get_logger(),
+        "POSE: (%.2f, %.2f, %.2f)  GOAL: (%.2f, %.2f)  DIST: %.2f  BW: %.2f  BR: %.2f",
+        robot_pose_.x, robot_pose_.y, robot_pose_.theta,
+        goal_.x, goal_.y, goal_distance,
+        goal_bearing_world, goal_bearing_robot);
+
+      if (facing_goal_) {
+        if (std::abs(goal_bearing_robot) > facing_goal_threshold_) {
+          cmd.twist.linear.x = 0.0;
+          cmd.twist.angular.z = std::clamp(
+            heading_gain_ * goal_bearing_robot,
+            -max_angular_speed_, max_angular_speed_);
+          RCLCPP_INFO(get_logger(),
+            "FACING: bearing=%.2f rad  cmd_angular=%.2f",
+            goal_bearing_robot, cmd.twist.angular.z);
+          cmd_pub_->publish(cmd);
+          publishVisualizationPath(goal_bearing_robot);
+          return;
+        }
+        facing_goal_ = false;
+        RCLCPP_INFO(get_logger(), "FACING: aligned at bearing=%.2f rad", goal_bearing_robot);
+      }
 
       VFHOutput output = vfh_planner_.plan(
         latest_scan_,
@@ -162,12 +263,14 @@ private:
 
       if (output.goal_reached) {
         has_goal_ = false;
+        publishGoalReached(true);
         publishZeroVelocity();
         publishEmptyPath();
         return;
       }
 
       if (output.path_blocked) {
+        RCLCPP_WARN(get_logger(), "VFH: path_blocked — stopping");
         publishZeroVelocity();
         return;
       }
@@ -176,6 +279,12 @@ private:
       cmd.twist.angular.z = std::clamp(
         heading_gain_ * output.steering_angle,
         -max_angular_speed_, max_angular_speed_);
+      RCLCPP_INFO(get_logger(),
+        "VFH_OUT: steer=%.2f rad  speed=%.2f  goal_reached=%d  path_blocked=%d",
+        output.steering_angle, output.linear_speed,
+        output.goal_reached, output.path_blocked);
+      RCLCPP_INFO(get_logger(),
+        "CMD: (%.2f, %.2f)", cmd.twist.linear.x, cmd.twist.angular.z);
 
       publishVisualizationPath(output.steering_angle);
     }
@@ -189,6 +298,14 @@ private:
     cmd.twist.linear.x = 0.0;
     cmd.twist.angular.z = 0.0;
     cmd_pub_->publish(cmd);
+    RCLCPP_DEBUG(get_logger(), "CMD: zero velocity (stopped)");
+  }
+
+  void publishGoalReached(bool reached) {
+    husky_msgs::msg::GoalReached msg;
+    msg.reached = reached;
+    msg.stamp = this->now();
+    goal_reached_pub_->publish(msg);
   }
 
   void publishEmptyPath() {
@@ -249,13 +366,17 @@ private:
   double rotation_speed_;
   double rotation_tolerance_;
   double rotation_timeout_;
+  double scan_timeout_;
+  double facing_goal_threshold_;
 
+  rclcpp::Time start_time_;
   VFHPlanner vfh_planner_;
 
   struct { double x = 0.0; double y = 0.0; double theta = 0.0; } robot_pose_;
   struct { double x = 0.0; double y = 0.0; } goal_;
 
   bool has_goal_ = false;
+  bool facing_goal_ = false;
   bool rotation_active_ = false;
   bool recovery_active_ = false;
   bool emergency_stop_ = false;
@@ -274,6 +395,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_sub_;
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  rclcpp::Publisher<husky_msgs::msg::GoalReached>::SharedPtr goal_reached_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 

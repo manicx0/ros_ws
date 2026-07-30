@@ -29,7 +29,7 @@ public:
       std::bind(&StuckDetectorNode::cmdVelCallback, this, std::placeholders::_1));
 
     odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
-      "platform/odom/filtered", 10,
+      "platform/odom", 10,
       std::bind(&StuckDetectorNode::odomCallback, this, std::placeholders::_1));
 
     robot_state_sub_ = create_subscription<husky_msgs::msg::RobotState>(

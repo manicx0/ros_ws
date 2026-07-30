@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import json
 import os
+import uuid
+import queue
+import threading
 import urllib.request
 import urllib.error
 import yaml
@@ -25,7 +28,7 @@ class GeminiConnectorNode(Node):
 
         self.api_key = self.get_parameter('api_key').value or os.environ.get('GEMINI_API_KEY', '')
         self.api_key_from_env = not self.api_key
-        self.model = self.get_parameter('model').value
+        self.model = self.get_parameter('model').value or 'gemini-3.5-flash'
         self.valid_robots = self._load_fleet_config(self.get_parameter('fleet_config_path').value)
         self.waypoint_loader = WaypointLoader(self.get_parameter('waypoints_config_path').value)
 
@@ -48,17 +51,44 @@ class GeminiConnectorNode(Node):
 
         self.raw_decision_pub = self.create_publisher(String, '/llm/raw_decision', 10)
         self.status_pub = self.create_publisher(String, '/llm/decision_status', 10)
+        self.command_status_pub = self.create_publisher(String, '/llm/command_status', 10)
 
         self.latest_fleet_state = None
-        self.last_command = None
+        self._last_command_id = None
+        self._last_command_text = None
+        self._last_command_time = 0.0
         self.robot_poses = {}
         for robot_id in self.valid_robots:
-            odom_topic = f'/{robot_id}/platform/odom/filtered'
+            odom_topic = f'/{robot_id}/platform/odom'
             self.create_subscription(
                 Odometry, odom_topic,
                 lambda msg, rid=robot_id: self.odom_callback(msg, rid),
                 10)
             self.get_logger().info(f'Subscribed to odometry for {robot_id} on {odom_topic}')
+
+        self._mission_status_sub = self.create_subscription(
+            String,
+            '/llm/mission_status',
+            self._mission_status_callback,
+            10
+        )
+
+        self._command_queue = queue.Queue()
+        self._worker_thread = threading.Thread(target=self._process_queue, daemon=True)
+        self._worker_thread.start()
+
+        self.get_logger().info('Waiting for initial odometry...')
+        for robot_id in self.valid_robots:
+            if robot_id not in self.robot_poses:
+                for _ in range(50):
+                    rclpy.spin_once(self, timeout_sec=0.1)
+                    if robot_id in self.robot_poses:
+                        break
+                if robot_id in self.robot_poses:
+                    self.get_logger().info(f'Odometry received for {robot_id}')
+                else:
+                    self.get_logger().warn(f'No odometry from {robot_id} after 5s')
+
         self.get_logger().info(f'Gemini connector initialized. Model: {self.model}')
 
     def fleet_state_callback(self, msg: FleetState):
@@ -89,35 +119,82 @@ class GeminiConnectorNode(Node):
             self.get_logger().error(f'Failed to load fleet config: {e}')
             return []
 
-    def command_callback(self, msg: String):
-        command = msg.data
-        if command == self.last_command:
-            return
-        self.get_logger().info(f'Received command: {command}')
-        self.last_command = command
+    def _publish_command_status(self, command_id, status, reason=''):
+        msg = String()
+        msg.data = json.dumps({
+            'command_id': command_id,
+            'status': status,
+            'reason': reason
+        })
+        self.command_status_pub.publish(msg)
 
-        if self.api_key_from_env:
-            self.api_key = os.environ.get('GEMINI_API_KEY', '')
-
-        if not self.api_key:
-            self._publish_status('No GEMINI_API_KEY configured')
-            return
-
-        fleet_state_json = format_fleet_state(self.latest_fleet_state)
-        prompt = self._build_prompt(command, fleet_state_json)
-
+    def _mission_status_callback(self, msg: String):
         try:
-            response = self._call_gemini(prompt)
-            self.raw_decision_pub.publish(self._make_string(response))
-            self.get_logger().info('Gemini response published to /llm/raw_decision')
-        except Exception as e:
-            self._publish_status(f'Gemini API error: {e}')
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        state = data.get('state', '')
+        if state in ('SUCCEEDED', 'EXECUTED_FAILED'):
+            self._last_command_text = None
+            self._last_command_time = 0.0
+            self.get_logger().info('Mission completed — cleared dedup cache')
+
+    def command_callback(self, msg: String):
+        command = msg.data.strip()
+        if not command:
+            return
+        command_id = str(uuid.uuid4())
+        elapsed = time.time() - self._last_command_time if self._last_command_time else 999.0
+        if command == self._last_command_text and elapsed < 30.0:
+            if self._last_command_id:
+                self._publish_command_status(
+                    command_id, 'skipped',
+                    'Duplicate command — already being processed (id: ' + self._last_command_id + ')')
+            return
+        self.get_logger().info(f'[{command_id[:8]}] Received command: {command}')
+        self._last_command_id = command_id
+        self._last_command_text = command
+        self._last_command_time = time.time()
+        self._publish_command_status(command_id, 'queued')
+        self._command_queue.put((command_id, command))
+
+    def _process_queue(self):
+        while rclpy.ok():
+            try:
+                command_id, command = self._command_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            self._publish_command_status(command_id, 'planning')
+            self.get_logger().info(f'[{command_id[:8]}] Processing command: {command}')
+
+            if self.api_key_from_env:
+                api_key = os.environ.get('GEMINI_API_KEY', '')
+                if api_key:
+                    self.api_key = api_key
+
+            if not self.api_key:
+                self._publish_command_status(command_id, 'failed', 'No GEMINI_API_KEY configured')
+                self._publish_status('No GEMINI_API_KEY configured')
+                continue
+
+            fleet_state_json = format_fleet_state(self.latest_fleet_state)
+            prompt = self._build_prompt(command, fleet_state_json)
+
+            try:
+                response = self._call_gemini(prompt)
+                self.raw_decision_pub.publish(self._make_string(response))
+                self._publish_command_status(command_id, 'done')
+                self.get_logger().info(f'[{command_id[:8]}] Gemini response published')
+            except Exception as e:
+                reason = f'Gemini API error: {e}'
+                self._publish_command_status(command_id, 'failed', reason)
+                self._publish_status(reason)
 
     def _build_prompt(self, command, fleet_state):
         valid_robots_str = ', '.join(self.valid_robots) if self.valid_robots else 'unknown'
         primary_robot = self.valid_robots[0] if self.valid_robots else 'unknown'
-        waypoint_names = self.waypoint_loader.get_available_names()
-        waypoint_names_str = ', '.join(waypoint_names) if waypoint_names else 'none'
+        waypoints_str = self.waypoint_loader.get_formatted_waypoints()
 
         odom_info = []
         for robot_id in self.valid_robots:
@@ -133,7 +210,7 @@ class GeminiConnectorNode(Node):
         return (
             "You are a fleet mission planner for outdoor Husky A200 robots.\n\n"
             f"Available robot IDs: {primary_robot} (primary), {', '.join(self.valid_robots[1:]) if len(self.valid_robots) > 1 else ''}\n\n"
-            f"Available waypoint names: {waypoint_names_str}\n\n"
+            f"Available waypoints:\n{waypoints_str}\n\n"
             f"Current fleet state:\n{fleet_state}\n\n"
             f"Current robot positions (odometry):\n{odom_str}\n\n"
             f"User command:\n{command}\n\n"

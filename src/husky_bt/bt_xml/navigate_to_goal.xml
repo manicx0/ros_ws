@@ -26,16 +26,7 @@
         </Fallback>
       </Fallback>
 
-      <!-- 6. Obstacle handling: safe → navigate, blocked → stop -->
-      <Fallback>
-        <Sequence>
-          <AvoidanceEnabledCondition/>
-          <ObstacleCheck/>
-        </Sequence>
-        <StopAndWait/>
-      </Fallback>
-
-      <!-- 7. Navigation execution -->
+      <!-- 6. Navigation execution (VFH planner handles obstacle avoidance) -->
       <NavigateToGoal goal="{target_pose}"/>
     </Sequence>
   </BehaviorTree>

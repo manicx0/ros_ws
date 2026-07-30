@@ -46,14 +46,6 @@ def generate_launch_description():
 
         Node(
             package='husky_nav',
-            executable='goal_pose_relay_node',
-            name='goal_pose_relay',
-            output='screen',
-            parameters=[{'use_sim_time': use_sim_time}],
-        ),
-
-        Node(
-            package='husky_nav',
             executable='stuck_detector_node',
             name='stuck_detector',
             output='screen',
@@ -64,6 +56,14 @@ def generate_launch_description():
                 {'grace_period': 2.0},
                 {'stuck_timeout': 8.0},
             ],
+        ),
+
+        Node(
+            package='husky_nav',
+            executable='topic_health_node',
+            name='topic_health',
+            output='screen',
+            parameters=[{'use_sim_time': use_sim_time}],
         ),
     ])
 

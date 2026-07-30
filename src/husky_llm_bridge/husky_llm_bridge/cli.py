@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import readline
 import threading
 import rclpy
@@ -17,31 +18,87 @@ class HuskyCLI(Node):
             String, '/llm/decision_status', self._decision_status_cb, 10)
         self.goal_event_sub = self.create_subscription(
             GoalEvent, '/fleet/goal_events', self._goal_event_cb, 10)
-        self.raw_decision_sub = self.create_subscription(
-            String, '/llm/raw_decision', self._raw_decision_cb, 10)
+        self.command_status_sub = self.create_subscription(
+            String, '/llm/command_status', self._command_status_cb, 10)
+        self.mission_status_sub = self.create_subscription(
+            String, '/llm/mission_status', self._mission_status_cb, 10)
+        self.mission_queue_sub = self.create_subscription(
+            String, '/llm/mission_queue', self._mission_queue_cb, 10)
+        self.natural_language_sub = self.create_subscription(
+            String, '/llm/natural_language_response', self._natural_language_cb, 10)
         self.fleet_state = None
-        self.waiting_for_response = False
+        self._latest_queue = None
 
     def _fleet_state_cb(self, msg):
         self.fleet_state = msg
 
     def _decision_status_cb(self, msg):
-        print(f"\n\033[1;31m[LLM Error]\033[0m {msg.data}")
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            data = msg.data
+        print(f"\n\033[1;31m[LLM Error]\033[0m {data}")
         print("\033[1;32mhusky>\033[0m ", end='', flush=True)
 
     def _goal_event_cb(self, msg):
         print(f"\n\033[1;34m[Event]\033[0m {msg.robot_id}: {msg.type}")
         print("\033[1;32mhusky>\033[0m ", end='', flush=True)
 
-    def _raw_decision_cb(self, msg):
-        if self.waiting_for_response:
-            self.waiting_for_response = False
-            response = msg.data.strip()
-            if response.startswith('{'):
-                print(f"\n\033[1;35m[LLM]\033[0m Processing mission...")
-            else:
-                print(f"\n\033[1;35m[LLM]\033[0m {response}")
-            print("\033[1;32mhusky>\033[0m ", end='', flush=True)
+    def _command_status_cb(self, msg):
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        cid = data.get('command_id', '')[:8]
+        status = data.get('status', '')
+
+        if status == 'queued':
+            print(f"\n\033[1;33m[Queue]\033[0m Command queued ({cid})")
+        elif status == 'planning':
+            print(f"\n\033[1;33m[LLM]\033[0m Processing... ({cid})")
+        elif status == 'done':
+            print(f"\n\033[1;32m[LLM]\033[0m Response received ({cid})")
+        elif status == 'failed':
+            reason = data.get('reason', 'Unknown error')
+            print(f"\n\033[1;31m[LLM Error]\033[0m {reason} ({cid})")
+        elif status == 'skipped':
+            print(f"\n\033[1;33m[Skipped]\033[0m {data.get('reason', '')}")
+
+        print("\033[1;32mhusky>\033[0m ", end='', flush=True)
+
+    def _mission_status_cb(self, msg):
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+
+        state = data.get('state', '')
+        robot = data.get('robot_id', '?')
+        action = data.get('action', '?')
+        elapsed = data.get('elapsed', 0)
+
+        if state == 'EXECUTING':
+            print(f"\n\033[1;34m[Mission]\033[0m {robot}: {action}... (running {elapsed}s)")
+        elif state == 'SUCCEEDED':
+            print(f"\n\033[1;32m[Mission]\033[0m {robot}: {action} → \033[1;32mSucceeded\033[0m ({elapsed}s)")
+        elif state == 'EXECUTED_FAILED':
+            reason = data.get('reason', 'Unknown error')
+            print(f"\n\033[1;31m[Mission]\033[0m {robot}: {action} → \033[1;31mFailed\033[0m — {reason}")
+        elif state == 'PLANNING_FAILED':
+            reason = data.get('reason', 'Unknown error')
+            print(f"\n\033[1;31m[Mission]\033[0m → \033[1;31mPlanning Failed\033[0m — {reason}")
+
+        print("\033[1;32mhusky>\033[0m ", end='', flush=True)
+
+    def _mission_queue_cb(self, msg):
+        try:
+            self._latest_queue = json.loads(msg.data)
+        except json.JSONDecodeError:
+            pass
+
+    def _natural_language_cb(self, msg):
+        print(f"\n\033[1;35m[LLM]\033[0m {msg.data}")
+        print("\033[1;32mhusky>\033[0m ", end='', flush=True)
 
     def run(self):
         print("\033[1;36mHusky Fleet CLI\033[0m (type 'help' for commands)\n")
@@ -66,31 +123,52 @@ class HuskyCLI(Node):
         msg = String()
         msg.data = cmd
         self.command_pub.publish(msg)
-        self.waiting_for_response = True
         print("\033[1;34m[Sent]\033[0m", cmd)
 
     def _show_status(self):
         if not self.fleet_state:
             print("\033[1;33m[No fleet data]\033[0m")
-            return
-        for i, robot_id in enumerate(self.fleet_state.robot_ids):
-            state = self.fleet_state.states[i]
-            status = []
-            if state.emergency_stop:
-                status.append('EMERGENCY')
-            if state.waiting:
-                status.append('WAITING')
-            if state.mission_active:
-                status.append('NAVIGATING')
-            if state.idle:
-                status.append('IDLE')
-            print(f"\033[1;36m{robot_id}:\033[0m {', '.join(status) or 'UNKNOWN'}")
+        else:
+            for i, robot_id in enumerate(self.fleet_state.robot_ids):
+                state = self.fleet_state.states[i]
+                status = []
+                if state.emergency_stop:
+                    status.append('EMERGENCY')
+                if state.waiting:
+                    status.append('WAITING')
+                if state.mission_active:
+                    status.append('NAVIGATING')
+                if state.idle:
+                    status.append('IDLE')
+                print(f"\033[1;36m{robot_id}:\033[0m {', '.join(status) or 'UNKNOWN'}")
+
+        if self._latest_queue:
+            q = self._latest_queue
+            active = q.get('active')
+            pending = q.get('pending', [])
+            history = q.get('history', [])
+
+            if active:
+                print(f"  \033[1;33mActive:\033[0m {active['robot_id']}: {active['action']} "
+                      f"({active['state']}, {active.get('elapsed', 0)}s)")
+            if pending:
+                print(f"  \033[1;33mPending:\033[0m {len(pending)} mission(s)")
+                for p in pending:
+                    print(f"    {p['robot_id']}: {p['action']} ({p['state']})")
+            if history:
+                print(f"  \033[1;33mRecent:\033[0m")
+                for h in history[-3:]:
+                    color = '\033[1;32m' if h['state'] == 'SUCCEEDED' else '\033[1;31m'
+                    print(f"    {color}{h['action']}\033[0m on {h['robot_id']} → "
+                          f"{h['state']} ({h.get('duration', 0)}s)")
+                    if h.get('reason'):
+                        print(f"      {h['reason']}")
 
     def _show_help(self):
         print("""
 \033[1;33mCommands:\033[0m
   <text>    Send command to LLM (e.g., "send robot to x=3,y=0")
-  status    Show current fleet state
+  status    Show current fleet state + mission queue
   help      Show this help
   clear     Clear screen
   quit      Exit CLI

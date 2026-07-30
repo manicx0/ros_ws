@@ -5,10 +5,12 @@ find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(action_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RobotState.msg"
   "msg/GoalEvent.msg"
+  "msg/GoalReached.msg"
   "msg/FleetState.msg"
   "msg/FleetGoal.msg"
   "msg/FleetResult.msg"
@@ -16,7 +18,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/FleetSetState.srv"
   "action/NavigateTo.action"
   "action/FleetNavigate.action"
-  DEPENDENCIES geometry_msgs
+  DEPENDENCIES geometry_msgs builtin_interfaces
 )
 
 ament_export_dependencies(rosidl_default_runtime)

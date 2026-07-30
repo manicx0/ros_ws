@@ -191,6 +191,17 @@ public:
         }
 
         auto sectors = buildHistogram(scan, num_sectors, obstacle_range, safety_margin);
+
+        bool any_blocked = false;
+        for (const auto& s : sectors) {
+            if (s.blocked) { any_blocked = true; break; }
+        }
+        if (!any_blocked) {
+            output.steering_angle = goal_bearing;
+            output.linear_speed = max_speed;
+            return output;
+        }
+
         auto valleys = findValleys(sectors, min_gap_width);
 
         if (valleys.empty()) {

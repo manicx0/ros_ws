@@ -8,3 +8,16 @@ bool idle
 bool emergency_stop
 bool avoidance_enabled
 bool mission_active
+
+# Current position and velocity (populated from filtered odometry)
+float64 position_x
+float64 position_y
+float64 position_yaw
+float64 linear_velocity
+float64 angular_velocity
+bool odom_valid
+
+# GPS position (from NavSatFix)
+float64 gps_latitude
+float64 gps_longitude
+bool gps_fix_valid

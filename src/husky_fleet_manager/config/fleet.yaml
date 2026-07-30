@@ -1,7 +1,7 @@
 fleet_manager:
   robots:
     - namespace: cpr_a200_0000
-      home_pose: {x: 0.0, y: 0.0, yaw: 0.0}
+      home_pose: {x: -4.5, y: -4.0, yaw: 0.0}
     - namespace: cpr_a200_0001
       home_pose: {x: 0.0, y: 0.0, yaw: 0.0}
     - namespace: cpr_a200_0002

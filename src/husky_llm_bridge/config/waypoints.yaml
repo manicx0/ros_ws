@@ -3,13 +3,13 @@
 # GPS coordinates are converted to odom using the gps_origin below
 
 gps_origin:
-  lat: 50.109461
-  lon: -97.318978
+  lat: 47.397742
+  lon: 8.545594
 
 waypoints:
-  origin:
-    name: "Charging Station"
-    odom: {x: 0.0, y: 0.0}
+  docking_station:
+    name: "Charging Dock"
+    gps: {lat: 47.397706, lon: 8.545534}
   
   point_a:
     name: "Loading Dock"
@@ -29,4 +29,4 @@ waypoints:
   
   test_point:
     name: "Test GPS Waypoint"
-    gps: {lat: 50.109661, lon: -97.318678}
+    gps: {lat: 47.397942, lon: 8.545894}

@@ -46,9 +46,13 @@ class LLMValidatorNode(Node):
         super().__init__('llm_validator_node')
 
         self.declare_parameter('fleet_config_path', '')
+        self.declare_parameter('waypoints_config_path', '')
 
         fleet_config_path = self.get_parameter('fleet_config_path').value
         self.valid_robots = self._load_fleet_config(fleet_config_path)
+
+        waypoints_config_path = self.get_parameter('waypoints_config_path').value
+        self.valid_waypoint_names = self._load_waypoint_names(waypoints_config_path)
 
         self.raw_decision_sub = self.create_subscription(
             String,
@@ -59,8 +63,9 @@ class LLMValidatorNode(Node):
 
         self.decision_pub = self.create_publisher(String, '/llm/decision', 10)
         self.status_pub = self.create_publisher(String, '/llm/decision_status', 10)
+        self.natural_language_pub = self.create_publisher(String, '/llm/natural_language_response', 10)
 
-        self.get_logger().info(f'LLM validator initialized. Valid robots: {self.valid_robots}')
+        self.get_logger().info(f'LLM validator initialized. Valid robots: {self.valid_robots}, Valid waypoints: {self.valid_waypoint_names}')
 
     def _load_fleet_config(self, path):
         if not path:
@@ -79,6 +84,23 @@ class LLMValidatorNode(Node):
             self.get_logger().error(f'Failed to load fleet config: {e}')
             return []
 
+    def _load_waypoint_names(self, path):
+        if not path:
+            return set()
+        try:
+            with open(path, 'r') as f:
+                config = yaml.safe_load(f)
+            names = set()
+            for key, wp in config.get('waypoints', {}).items():
+                names.add(key)
+                display_name = wp.get('name', '')
+                if display_name:
+                    names.add(display_name)
+            return names
+        except Exception as e:
+            self.get_logger().error(f'Failed to load waypoints config: {e}')
+            return set()
+
     def raw_decision_callback(self, msg: String):
         raw = msg.data.strip()
         if raw.startswith('```'):
@@ -92,8 +114,10 @@ class LLMValidatorNode(Node):
 
         try:
             data = json.loads(raw)
-        except json.JSONDecodeError as e:
-            self._publish_status(False, f'Invalid JSON: {e}')
+        except json.JSONDecodeError:
+            # Not JSON — treat as natural language response (e.g., answering a question)
+            self.natural_language_pub.publish(msg)
+            self.get_logger().info('Natural language response forwarded')
             return
 
         error = self._validate(data)
@@ -208,6 +232,8 @@ class LLMValidatorNode(Node):
         if waypoint_name is not None:
             if not isinstance(waypoint_name, str) or not waypoint_name:
                 return f'{prefix}: "waypoint_name" must be a non-empty string'
+            if self.valid_waypoint_names and waypoint_name not in self.valid_waypoint_names:
+                return f'{prefix}: "waypoint_name" "{waypoint_name}" not in available waypoints: {sorted(self.valid_waypoint_names)}'
 
         if waypoint_names is not None:
             if not isinstance(waypoint_names, list) or len(waypoint_names) == 0:
@@ -215,10 +241,13 @@ class LLMValidatorNode(Node):
             for j, name in enumerate(waypoint_names):
                 if not isinstance(name, str) or not name:
                     return f'{prefix}: waypoint_names[{j}] must be a non-empty string'
+                if self.valid_waypoint_names and name not in self.valid_waypoint_names:
+                    return f'{prefix}: waypoint_names[{j}] "{name}" not in available waypoints: {sorted(self.valid_waypoint_names)}'
 
-        priority = mission.get('priority', 3)
-        if not isinstance(priority, int) or priority < 1 or priority > 5:
-            return f'{prefix}: priority must be int 1-5, got {priority}'
+        priority = mission.get('priority')
+        if priority is not None:
+            if not isinstance(priority, (int, float)) or isinstance(priority, bool) or priority < 1 or priority > 5:
+                return f'{prefix}: priority must be numeric 1-5, got {priority}'
 
         return None
 

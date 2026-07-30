@@ -1,6 +1,29 @@
 # Husky A200 Autonomous Navigation (ROS 2 Jazzy + Gazebo Harmonic)
 
-Custom navigation stack (no Nav2) for Clearpath Husky A200 with VLP-16 lidar, using pure pursuit, obstacle detection, path planning, and BehaviorTree.CPP mission execution.
+Custom mapless navigation stack (no Nav2) for Clearpath Husky A200 with VLP-16 lidar, using VFH+ reactive obstacle avoidance, BehaviorTree.CPP mission execution, and LLM-driven fleet management.
+
+## Quick Start
+
+```bash
+source install/setup.bash
+```
+
+| # | Command | Purpose |
+|---|---------|---------|
+| 1 | `ros2 launch husky_bringup sim.launch.py` | Gazebo + robot spawn |
+| 2 | `ros2 launch husky_bringup nav.launch.py namespace:=cpr_a200_0000` | Navigation stack |
+| 3 | `ros2 launch husky_bringup rviz.launch.py namespace:=cpr_a200_0000` | Visualization |
+| 4 | `ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -p stamped:=True -r /cmd_vel:=/cpr_a200_0000/cmd_vel` | Keyboard control (real TTY) |
+| 5 | `ros2 launch husky_bringup mission.launch.py namespace:=cpr_a200_0000 bt_file:=patrol_mission.xml` | BT autonomous mission |
+| — | `ros2 launch husky_llm_bridge llm_bridge.launch.py` | LLM fleet pipeline |
+| — | `husky` | LLM command CLI (after bridge) |
+
+### Send a navigation goal
+
+```bash
+ros2 topic pub --once /cpr_a200_0000/goal_waypoints geometry_msgs/msg/PoseStamped \
+  '{header: {frame_id: "odom"}, pose: {position: {x: 8.0, y: 5.0, z: 0.0}, orientation: {w: 1.0}}}'
+```
 
 ## Architecture
 
@@ -9,556 +32,263 @@ Custom navigation stack (no Nav2) for Clearpath Husky A200 with VLP-16 lidar, us
 | Node | Package | Purpose |
 |------|---------|---------|
 | `robot_state_publisher` | `robot_state_publisher` | Publishes joint transforms from URDF |
-| `gz_ros_control` | `gz_ros2_control` (Gazebo plugin) | Bridge Gazebo physics → ros2_control |
-| `controller_manager` | `controller_manager` (loaded by gz_ros_control) | Manages lifecycle of controllers |
-| `joint_state_broadcaster` | `controller_manager` (spawner) | Publishes wheel joint positions/velocities |
-| `platform_velocity_controller` | `diff_drive_controller` (spawner) | Receives Twist → applies to wheel joints |
-| `ekf_node` | `robot_localization` | Fuses wheel odom + IMU into filtered odom |
-| `lidar3d_0_gz_bridge` | `ros_gz_bridge` | Bridges Gazebo lidar scan → ROS topics |
-| `cmd_vel_bridge` | `ros_gz_bridge` | Bridges ROS cmd_vel → Gazebo Twist |
-| `odom_base_tf_bridge` | `ros_gz_bridge` | Bridges Gazebo TF → ROS tf |
-| `pure_pursuit` | `husky_nav` | Follows planned path via cmd_vel |
-| `path_planner` | `husky_nav` | Plans path from current pose to goal |
-| `obstacle_detector` | `husky_nav` | Detects obstacles in lidar point cloud |
-| `ekf_gps` | `husky_nav` | GPS → odometry fusion (expansion) |
-| `goal_pose_relay` | `husky_nav` | Relays RViz 2D Nav Goal → goal_waypoints |
-| `mission_executor` | `husky_bt` | Runs behavior tree XML for autonomous patrol |
-| `twist_mux` | `twist_mux` | Multiplexes cmd_vel from multiple sources |
-| `teleop_twist_joy` | `teleop_twist_joy` | Joystick → cmd_vel |
+| `gz_ros_control` | `gz_ros2_control` | Bridge Gazebo physics → ros2_control |
+| `joint_state_broadcaster` | `controller_manager` (spawner) | Publishes wheel joint states |
+| `platform_velocity_controller` | `diff_drive_controller` (spawner) | Receives Twist → wheel joints |
+| `vfh_planner` | `husky_nav` | VFH+ reactive planner → cmd_vel |
+| `obstacle_detector` | `husky_nav` | Filters lidar point cloud → scan_2d |
+| `stuck_detector` | `husky_nav` | Monitors cmd_vel vs actual velocity |
+| `topic_health` | `husky_nav` | Diagnostic topic activity monitor |
+| `ekf_gps` | `husky_nav` | GPS → odometry fusion |
+| `mission_executor` | `husky_bt` | BehaviorTree.CPP mission executor |
+| `fleet_manager` | `husky_fleet_manager` | Multi-robot state aggregation + goal dispatch |
+| `llm_bridge` | `husky_llm_bridge` | Fleet-level LLM command bridge (Python) |
+| `llm_validator` | `husky_llm_bridge` | JSON mission schema validator |
+| `llm_connector` | `husky_llm_bridge` | LLM provider connector (Gemini or Ollama) |
 
 ### Topics (under `cpr_a200_0000/`)
 
 **Input:**
 | Topic | Type | Publisher |
 |-------|------|-----------|
-| `cmd_vel` | `TwistStamped` | teleop_keyboard, pure_pursuit, twist_marker_server |
-| `goal_waypoints` | `PoseStamped` | mission_executor, goal_pose_relay, user CLI |
-| `/goal_pose` | `PoseStamped` | RViz 2D Nav Goal tool (global, not namespaced) |
+| `cmd_vel` | `TwistStamped` | teleop, vfh_planner |
+| `goal_waypoints` | `PoseStamped` | mission_executor, user CLI |
+| `rotation_goal` | `Float64` | llm_bridge (rotate action) |
+| `emergency_stop` | `Bool` | hardware / fleet manager |
 
 **Sensor:**
 | Topic | Type | Publisher |
 |-------|------|-----------|
-| `velodyne_points` | `PointCloud2` | lidar bridge (3D full) |
-| `scan_2d` | `LaserScan` | lidar bridge (2D projection) |
-| `sensors/lidar3d_0/scan` | `LaserScan` | lidar bridge (raw) |
-| `sensors/lidar3d_0/points` | `PointCloud2` | lidar bridge (raw) |
+| `velodyne_points` | `PointCloud2` | lidar bridge |
+| `scan_2d` | `LaserScan` | obstacle_detector |
 
-**State / Odometry:**
+**State:**
 | Topic | Type | Publisher |
 |-------|------|-----------|
+| `platform/odom` | `Odometry` | diff_drive controller |
 | `platform/joint_states` | `JointState` | joint_state_broadcaster |
-| `platform/odom` | `Odometry` | platform_velocity_controller |
-| `odometry/filtered` | `Odometry` | ekf_node |
-| `tf` | `TFMessage` | robot_state_publisher + ekf_node |
-| `tf_static` | `TFMessage` | robot_state_publisher |
+| `robot_state` | `RobotState` | mission_executor |
+| `stuck` | `Bool` | stuck_detector |
+| `topic_health` | `String` | topic_health_node |
+| `vfh_goal_reached` | `Bool` | vfh_planner |
 
-**Plan:**
+**Fleet (global):**
 | Topic | Type | Publisher |
 |-------|------|-----------|
-| `global_path` | `Path` | path_planner_node |
-
-**Processed:**
-| Topic | Type | Publisher |
-|-------|------|-----------|
-| `filtered_cloud` | `PointCloud2` | obstacle_detector_node |
+| `/fleet/robot_states` | `FleetState` | fleet_manager |
+| `/fleet/goal_events` | `GoalEvent` | fleet_manager |
+| `/llm/raw_decision` | `String` | llm_connector |
+| `/llm/decision` | `String` | llm_validator |
+| `/llm/decision_status` | `String` | llm_validator |
 
 ### Data Flow
 
 ```
-                    Gazebo World
-                         │
-              gz_ros_control (plugin in URDF)
-                         │
-                 controller_manager
-                    │     │      │
-       joint_state  │     │      │  platform_velocity_controller
-       _broadcaster │     │      │  ─→ /platform/odom
-       ─→ /platform/│     │      │  ←─ /platform/cmd_vel
-         joint_states│     │      │
-                    │     │      │
-              robot_state  cmd_vel_bridge ←── twist_mux ←── pure_pursuit
-              _publisher  (ROS↔Gazebo)              ↑      path_planner
-              ─→ /tf                              teleop    obstacle_detector
-                                                    │
-                                             mission_executor (BT)
-                                             ─→ /goal_waypoints
+                         Gazebo World
+                              │
+                   gz_ros_control (plugin)
+                              │
+                   joint_state_broadcaster
+                   platform_velocity_controller
+                   ─→ /platform/odom
+                   ←─ /platform/cmd_vel
 
-                    ekf_node ←── /platform/odom
-                    ─→ /odometry/filtered
-                    ─→ odom→base_link (tf)
+  vfh_planner ←── scan_2d (from obstacle_detector)
+  vfh_planner ←── goal_waypoints (from BT / user)
+  vfh_planner ──→ cmd_vel
+  vfh_planner ──→ vfh_goal_reached → BT feedback
 
-                    obstacle_detector ←── /velodyne_points
-                    ─→ /filtered_cloud
-```
+  mission_executor (BT) ──→ goal_waypoints
+                    ←── vfh_goal_reached, stuck, emergency_stop
 
-### Repo Layout
+  fleet_manager ←── robot_state (per robot)
+               ──→ /fleet/robot_states
+               ──→ navigate_to action (per robot)
 
-```
-src/
-  clearpath_common/   — upstream (gitignored, installed at /opt/ros/jazzy)
-  clearpath_gz/        — upstream (gitignored, installed at /opt/ros/jazzy)
-  husky_bringup/       — launch files, configs, worlds, RViz config
-  husky_bt/            — BehaviorTree.CPP mission executor + BT node plugins
-  husky_nav/           — pure_pursuit, path_planner, obstacle_detector, ekf_gps (C++)
-```
-
-All C++ topic strings use relative paths (no leading `/`) to inherit namespace from `PushRosNamespace`.
-
-## Launch Commands
-
-All commands require `source install/setup.bash` first.
-
-| Terminal | Command | Purpose |
-|----------|---------|---------|
-| 1 | `ros2 launch husky_bringup sim.launch.py` | Gazebo simulation + robot spawn |
-| 2 | `ros2 launch husky_bringup nav.launch.py namespace:=cpr_a200_0000` | Navigation stack (pure pursuit, path planner, obstacle detector, EKF) |
-| 3 | `ros2 launch husky_bringup rviz.launch.py namespace:=cpr_a200_0000` | RViz visualization |
-| 4 | `ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -p stamped:=True -r /cmd_vel:=/cpr_a200_0000/cmd_vel` | Manual keyboard control |
-| 5 | `ros2 launch husky_bringup mission.launch.py namespace:=cpr_a200_0000 bt_file:=patrol_mission.xml` | Autonomous BT mission |
-
-**LLM Fleet Pipeline** (alternative to terminals 4-5):
-
-| Terminal | Command | Purpose |
-|----------|---------|---------|
-| 4 | `ros2 launch husky_llm_bridge llm_bridge.launch.py` | Fleet manager + LLM bridge |
-| 5 | `husky` | Interactive LLM command CLI |
-
-## Quick Start
-
-### Prerequisites
-
-Robot config at `/root/clearpath/robot.yaml`:
-
-```yaml
-system:
-  username: root
-  namespace: cpr_a200_0000
-
-platform:
-  model: a200
-
-sensors:
-  lidar3d:
-    - model: velodyne_lidar
-      urdf_enabled: true
-      launch_enabled: true
-      parent: top_chassis_link    # NOT top_plate_link (doesn't exist in A200 URDF)
-      xyz: [0.0, 0.0, 0.12]
-      rpy: [0.0, 0.0, 0.0]
-  gps:
-    - model: garmin_18x
-      urdf_enabled: true
-      launch_enabled: true
-      parent: top_chassis_link    # NOT top_plate_link (doesn't exist in A200 URDF)
-      xyz: [0.0, 0.0, 0.1]
-      rpy: [0.0, 0.0, 0.0]
-```
-
-All commands need `source install/setup.bash` first.
-
-### Terminal 1: Gazebo + Robot
-
-```bash
-source install/setup.bash
-ros2 launch husky_bringup sim.launch.py
-```
-
-Wait for robot entity in Gazebo. Controllers self-configure within ~30s.
-
-### Terminal 2: Navigation stack
-
-```bash
-source install/setup.bash
-ros2 launch husky_bringup nav.launch.py namespace:=cpr_a200_0000
-```
-
-Starts pure_pursuit, path_planner, obstacle_detector, stuck_detector.
-
-### Terminal 2b: GPS + EKF (optional)
-
-```bash
-source install/setup.bash
-ros2 launch husky_bringup gps.launch.py namespace:=cpr_a200_0000
-```
-
-Starts navsat_transform_node + EKF with GPS fusion. Requires GPS sensor in robot.yaml and `<spherical_coordinates>` in world file.
-
-### Terminal 3: RViz
-
-```bash
-source install/setup.bash
-ros2 launch husky_bringup rviz.launch.py namespace:=cpr_a200_0000
-```
-
-Robot model, TF, point cloud, path, odometry. Separate file so RViz doesn't die when sim restarts.
-
-### Terminal 4: Teleop (requires real TTY)
-
-```bash
-source install/setup.bash
-ros2 run teleop_twist_keyboard teleop_twist_keyboard \
-  --ros-args -p stamped:=True -r /cmd_vel:=/cpr_a200_0000/cmd_vel
-```
-
-### Terminal 5: Autonomous goal
-
-**Option A: RViz 2D Nav Goal (recommended)**
-
-In RViz, click the **"2D Nav Goal"** button in the toolbar, then click anywhere in the scene. The robot drives there. The `goal_pose_relay` node bridges RViz's `/goal_pose` topic to the navigation stack's `goal_waypoints` topic.
-
-**Option B: CLI command**
-
-```bash
-source install/setup.bash
-ros2 topic pub --once /cpr_a200_0000/goal_waypoints geometry_msgs/msg/PoseStamped \
-  '{header: {frame_id: "odom"}, pose: {position: {x: 8.0, y: 5.0, z: 0.0}, orientation: {w: 1.0}}}'
-```
-
-### Terminal 5: BehaviorTree mission
-
-```bash
-source install/setup.bash
-ros2 launch husky_bringup mission.launch.py namespace:=cpr_a200_0000 bt_file:=patrol_mission.xml
-```
-
-### Terminal 6: LLM Fleet Pipeline
-
-```bash
-# Gemini (default)
-export GEMINI_API_KEY="your-key-here"
-source install/setup.bash
-ros2 launch husky_llm_bridge llm_bridge.launch.py
-
-# Or use OpenCode Go (fast)
-export OPENCODE_GO_API_KEY="your-key-here"
-ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py model:=deepseek-v4-flash
-
-# Or use OpenCode Go (reasoning)
-ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py model:=deepseek-v4-pro
-
-# Or use Ollama (local)
-ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=ollama_connector_node.py
-```
-
-Then use the CLI to send commands:
-
-```bash
-husky
-```
-
-Interactive REPL:
-```
-husky> send robot to x=3,y=0
-[Sent] send robot to x=3,y=0
-[LLM] Processing mission...
-
-husky> is the robot stuck?
-[Sent] is the robot stuck?
-[LLM] Robot cpr_a200_0000 is not stuck. It is currently IDLE.
-
-husky> status
-cpr_a200_0000: IDLE
-
-husky> help
-Commands:
-  <text>    Send command to LLM (e.g., "send robot to x=3,y=0")
-  status    Show current fleet state
-  help      Show this help
-  clear     Clear screen
-  quit      Exit CLI
-
-husky> quit
-```
-
-The CLI supports both mission commands and natural language questions. The LLM will respond with mission execution for commands, or natural language answers for questions.
-
-### Autonomous goal
-
-Stop the current goal and regain manual control:
-
-```bash
-# 1. Cancel the goal (keeps all nodes running)
-ros2 topic pub --once /cpr_a200_0000/goal_waypoints geometry_msgs/msg/PoseStamped \
-  '{header: {frame_id: "odom"}, pose: {position: {x: 0.0, y: 0.0, z: 0.0}, orientation: {w: 1.0}}}'
-
-# 2. Zero out residual velocity
-ros2 topic pub --once /cpr_a200_0000/cmd_vel geometry_msgs/msg/TwistStamped \
-  '{twist: {linear: {x: 0.0}, angular: {z: 0.0}}}'
-```
-
-Teleop keyboard (Terminal 4) now has priority via twist_mux. Alternatively, Ctrl+C the mission executor (Terminal 5) to stop autonomous goals entirely.
-
-## Namespaces
-
-All nodes run under `cpr_a200_0000/` namespace. Topics are scoped to the robot, enabling future multi-robot use — adding a second Husky is just a different namespace.
-
-### OpenCode Go Model Override
-
-Pass `model:=` to the launch file to switch between fast and reasoning models:
-```bash
-# Fast (default):
-ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py
-
-# Reasoning:
-ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py model:=deepseek-v4-pro
-
-# Also works with Gemini:
-ros2 launch husky_llm_bridge llm_bridge.launch.py model:=gemini-3.5-flash
+  LLM pipeline: connector → validator → bridge → fleet_manager
 ```
 
 ## LLM Fleet Pipeline
 
-### Prerequisites
-
-Set API key before launching the bridge:
-
-**Gemini (default):**
-```bash
-export GEMINI_API_KEY="your-key-here"
-```
-
-**OpenCode Go:**
-```bash
-export OPENCODE_GO_API_KEY="your-key-here"
-```
-
-**Ollama (local):**
-No API key required. Ensure Ollama is running on `http://localhost:11434`.
-
-Or add to `~/.bashrc` for persistence:
+### Launch
 
 ```bash
-echo 'export GEMINI_API_KEY="your-key-here"' >> ~/.bashrc
-```
-
-### LLM Connector Configuration
-
-The LLM bridge supports multiple LLM providers. Switch between them using the `connector` launch argument:
-
-**Gemini (default):**
-```bash
+# DeepSeek (default)
+export DEEPSEEK_API_KEY="your-key-here"
 ros2 launch husky_llm_bridge llm_bridge.launch.py
-# or explicitly:
+
+# Gemini
 ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=gemini_connector_node.py
-```
 
-**OpenCode Go:**
-```bash
-export OPENCODE_GO_API_KEY="your-key-here"
-# Fast model (default):
-ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py
-# Reasoning model:
-ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=deepseek_connector_node.py model:=deepseek-v4-pro
-```
-
-**Ollama (local):**
-```bash
+# Ollama (local, no key needed)
 ros2 launch husky_llm_bridge llm_bridge.launch.py connector:=ollama_connector_node.py
 ```
 
-**Available connectors:**
-- `gemini_connector_node.py` — Google Gemini API (default)
-- `deepseek_connector_node.py` — OpenCode Go API (OpenAI-compatible, models: `deepseek-v4-flash`, `deepseek-v4-pro`)
-- `ollama_connector_node.py` — Ollama local server (OpenAI-compatible)
+Then use the CLI:
+```bash
+husky
+```
 
-All connectors use the same prompt structure and produce identical JSON output. The validator, bridge, and fleet manager work the same regardless of which connector is used.
+### Pipeline stages
 
-### Debugging
+1. **Connector** — Calls LLM API (DeepSeek/Gemini/Ollama) with fleet state + robot odometry in prompt. Publishes raw JSON to `/llm/raw_decision`.
+2. **Validator** — Validates JSON against mission schema (robot_id, action, waypoints, priority). Rejects malformed/invalid commands via `/llm/decision_status`.
+3. **Bridge** — Converts validated decisions into ROS actions/topics per robot. Publishes waypoints, rotation goals, or state changes.
+4. **Fleet Manager** — Aggregates per-robot states, dispatches goals via `navigate_to` action server, provides `/fleet/robot_states` and `/fleet/fleet_navigate`.
 
-Run in any terminal after sending a command:
+### JSON schema
 
-| Check | Command |
-|-------|---------|
-| Raw Gemini output | `ros2 topic echo /llm/raw_decision` |
-| Validation result | `ros2 topic echo /llm/decision_status` |
-| Goal events | `ros2 topic echo /fleet/goal_events` |
-| Fleet states | `ros2 topic echo /fleet/robot_states` |
-| Robot state | `ros2 topic echo /cpr_a200_0000/robot_state` |
-| Velocity commands | `ros2 topic echo /cpr_a200_0000/cmd_vel` |
+```json
+{"missions": [{
+  "action": "navigate" | "set_state" | "rotate",
+  "robot_id": "cpr_a200_0000",
+  "waypoints": [{"x": 5.0, "y": 0.0, "yaw": 1.57}],
+  "relative": {"forward": 2.0, "right": 0.5},
+  "priority": 3,
+  "angle_deg": 180.0
+}]}
+```
 
-### Bypass LLM (test bridge directly)
+- `navigate`: Requires `waypoints[]` with x, y, optional yaw. Or `relative` for body-frame moves.
+- `rotate`: Requires `angle_deg` (-360 to 360). Positive = CCW.
+- `set_state`: Sets `waiting` or `avoidance_enabled` flags.
+- Priority: 1 (lowest) to 5 (highest).
+
+### Bypass LLM (test directly)
 
 ```bash
 ros2 topic pub --once /llm/decision std_msgs/String \
   'data: "{\"missions\":[{\"action\":\"navigate\",\"robot_id\":\"cpr_a200_0000\",\"waypoints\":[{\"x\":2.0,\"y\":0.0}],\"priority\":3}]}"'
 ```
 
-### Common Issues
+### Debug topics
 
-#### No API Key
-
-**Symptom:**
-```
-[WARN] [gemini_connector_node.py-4]: Status: No GEMINI_API_KEY configured
-```
-
-**Solution:**
-```bash
-export GEMINI_API_KEY="your-key"
-# Then restart the LLM bridge terminal
-```
-
-#### Action Server Not Available
-
-**Symptom:**
-```
-[WARN] [fleet_manager_node-1]: Action server not available for cpr_a200_0000
-```
-
-**Cause:** The mission executor (Terminal 5) isn't running or hasn't started yet.
-
-**Solution:** Ensure Terminal 5 is running before sending commands.
-
-#### Validation Errors
-
-The validator rejects invalid data. Examples:
-
-**Invalid robot_id:**
-```
-[llm_validator_node.py-3]: Validation failed: Mission[0]: robot_id "invalid_robot" not in fleet config
-```
-
-**Missing waypoints:**
-```
-[llm_validator_node.py-3]: Validation failed: Mission[0]: navigate action must have waypoints
-```
-
-**Invalid priority:**
-```
-[llm_validator_node.py-3]: Validation failed: Mission[0]: priority must be 1-5
-```
+| Command | Shows |
+|---------|-------|
+| `ros2 topic echo /llm/raw_decision` | Raw LLM output |
+| `ros2 topic echo /llm/decision_status` | Validation result |
+| `ros2 topic echo /fleet/goal_events` | Goal dispatch events |
+| `ros2 topic echo /fleet/robot_states` | All robot states |
+| `ros2 topic echo /cpr_a200_0000/robot_state` | Single robot state |
 
 ## Safety Features
 
-### Reactive Obstacle Avoidance
+### VFH+ Obstacle Avoidance
 
-The robot uses its 3D lidar to detect obstacles and react in real-time, even when the LLM commands it to move forward.
+VFH+ (Vector Field Histogram) planner in `vfh_planner_node` provides reactive mapless navigation:
 
-**Behavior:**
-- **Poles/narrow obstacles** (< 0.5 rad angular width): Robot steers toward the nearest gap and continues at 50% speed
-- **Walls/wide obstacles** (>= 0.5 rad angular width): Robot stops completely (linear.x = 0, angular.z = 0)
-- **Clear path**: Normal pure pursuit navigation resumes
+- Builds polar histogram (72 sectors × 5°) from live `scan_2d`
+- Finds free valleys (contiguous free sectors, min gap width 0.3 rad)
+- Selects valley via cost function: `|angle_to_goal| + 0.3 × (1/valley_width)`
+- Scales speed by obstacle proximity (0.15–0.45 m/s)
+- **Poles** (< 0.5 rad width): steers toward nearest gap at 50% speed
+- **Walls** (≥ 0.5 rad width): stops completely
+- Checks ±0.5 rad forward cone (not single ray)
+- Visualizes path on `global_path` for RViz
 
-**How it works:**
-1. `obstacle_detector_node` filters 3D lidar point cloud and publishes `scan_2d` (LaserScan)
-2. `pure_pursuit_node` subscribes to `scan_2d` and classifies obstacles as pole or wall
-3. Checks a ±0.5 rad forward cone (not just a single ray) to detect obstacles slightly off-center
-4. For poles: finds the nearest gap and steers toward it
-5. For walls: stops the robot
-6. BT's `ObstacleCheck` also monitors `scan_2d` for additional safety
-
-**Parameters** (in `config/pure_pursuit_params.yaml`):
-- `avoidance_distance`: 2.0m — max distance to detect obstacles
-- `wall_angular_threshold`: 0.5 rad — angular width threshold for wall vs pole
-- `avoidance_speed_factor`: 0.5 — speed multiplier during pole avoidance
-- `min_gap_width`: 0.3 rad — minimum gap width to steer toward
+Parameters in `config/pure_pursuit_params.yaml` under `vfh_planner:` section.
 
 ### Stuck Detection
 
-The robot monitors commanded vs actual velocity. If the robot is commanded to move but isn't moving for 8 seconds, it's considered stuck.
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `speed_threshold` | 0.1 m/s | Min commanded speed to monitor |
+| `stuck_threshold` | 0.05 m/s | Actual speed below this = stuck |
+| `grace_period` | 2.0 s | Delay before monitoring starts |
+| `stuck_timeout` | 8.0 s | Duration of stuck → recovery |
 
-**Behavior:**
-1. Robot detects stuck → executes `RecoveryRotate` (3s rotation)
-2. Checks if unstuck → if yes, continues navigation
-3. If still stuck → tries recovery again (up to 3 attempts)
-4. After 3 failed attempts → tree halts permanently, robot stops
-5. Operator must send new goal to resume
+Behavior: RecoveryRotate (3s) → up to 3 attempts → permanent halt. Operator must send new goal.
 
-**Parameters** (in `nav.launch.py`):
-- `speed_threshold`: 0.1 m/s (minimum commanded speed to trigger detection)
-- `stuck_threshold`: 0.05 m/s (actual speed below this = stuck)
-- `grace_period`: 2.0s (time before stuck detection starts)
-- `stuck_timeout`: 8.0s (duration of stuck condition before triggering)
+### Emergency Stop
 
-**Limitation:** Stuck detection requires active `cmd_vel` commands. If the robot is physically blocked but no velocity is commanded (e.g., mission completed or aborted), stuck detection won't trigger.
-
-**Check status:**
-```bash
-ros2 topic echo /cpr_a200_0000/stuck
-```
+- Published to `/<robot_id>/emergency_stop` (Bool)
+- Software-originated (LLM/fleet): auto-cleared on new goal
+- Hardware-originated: must be explicitly cleared
+- Pure pursuit/VFH node subscribes and zeros cmd_vel immediately
 
 ### GPS Fix Loss
 
-If GPS fix is lost (status == -1 or no GPS message for 5 seconds), the behavior tree halts and the robot stops.
-
-**Behavior:**
-- Tree halts immediately when GPS fix is lost
-- Robot stops (no movement)
-- Operator must wait for GPS fix to return
-- When fix returns, tree resumes automatically
-
-**Check GPS status:**
-```bash
-ros2 topic echo /cpr_a200_0000/sensors/gps_0/fix
-```
+BT node `GpsFixCheck` monitors `/sensors/gps_0/fix`. If `status.status == -1` or no message for 5s, tree halts. Resumes automatically when fix returns.
 
 ### Rotate Action
 
-The robot can perform in-place rotations without forward movement. This is useful for turning to face a specific direction or recovering from being stuck.
+In-place rotation via LLM command. Publishes angle to `/<robot_id>/rotation_goal`. VFH planner enters rotation mode (linear.x = 0, angular.z = sign(angle) × 0.4 rad/s). Exits at 0.1 rad tolerance or 10s timeout.
 
-**Usage via CLI:**
-```bash
-husky
-husky> turn the robot 180 degrees
-husky> rotate 90 degrees left
-husky> spin right by 45 degrees
+## Robot Config
+
+### `/root/clearpath/robot.yaml`
+
+A200 URDF defines `top_chassis_link` (not `top_plate_link`). Sensor parent fields must match:
+
+```yaml
+sensors:
+  lidar3d:
+    - model: velodyne_lidar
+      parent: top_chassis_link
+      xyz: [0.0, 0.0, 0.12]
+  gps:
+    - model: garmin_18x
+      parent: top_chassis_link
+      xyz: [0.0, 0.0, 0.1]
 ```
 
-**JSON format:**
-```json
-{
-  "action": "rotate",
-  "robot_id": "cpr_a200_0000",
-  "angle_deg": 180.0
-}
-```
-
-**Parameters:**
-- `angle_deg`: Rotation angle in degrees (positive = counterclockwise, negative = clockwise)
-- Range: -360 to 360 degrees
-
-**How it works:**
-1. LLM generates rotate mission with angle
-2. Bridge publishes angle to `/cpr_a200_0000/rotation_goal` topic
-3. Pure pursuit enters rotation mode: `linear.x = 0`, `angular.z = sign(angle) * rotation_speed`
-4. Exits rotation mode when within tolerance (0.1 rad) or timeout (10s)
-
-**Parameters** (in `config/pure_pursuit_params.yaml`):
-- `rotation_speed`: 0.4 rad/s
-- `rotation_tolerance`: 0.1 rad
-- `rotation_timeout`: 10.0s
-
-## Troubleshooting
-
-### Robot not visible in Gazebo
-
-Check generation pipeline:
-
+Validate changes:
 ```bash
 source install/setup.bash
 ros2 run clearpath_generator_common generate_description -s /root/clearpath/
-ros2 run clearpath_generator_common generate_semantic_description -s /root/clearpath/  # catches missing links
+ros2 run clearpath_generator_common generate_semantic_description -s /root/clearpath/
 ros2 run clearpath_generator_gz generate_launch -s /root/clearpath/
 ros2 run clearpath_generator_gz generate_param -s /root/clearpath/
 ```
 
-If "parent link not found" → A200 URDF defines `top_chassis_link`, not `top_plate_link`.
+### Namespaces
+
+All nodes run under `cpr_a200_0000/` namespace. Multi-robot support = different namespace.
+
+## Repo Layout
+
+```
+src/
+  husky_bringup/        — launch files, configs, worlds, RViz config
+  husky_bt/             — BehaviorTree.CPP nodes + XML trees
+  husky_nav/            — vfh_planner, obstacle_detector, stuck_detector, topic_health, ekf_gps (C++)
+  husky_msgs/           — custom messages, services, actions
+  husky_fleet_manager/  — fleet state aggregation + goal dispatch (C++)
+  husky_llm_bridge/     — LLM pipeline: connector → validator → bridge (Python)
+```
+
+## Troubleshooting
+
+### "parent link not found" in generation
+
+A200 URDF defines `top_chassis_link`, not `top_plate_link`. Fix sensor `parent:` in `robot.yaml`.
 
 ### Controllers fail to configure
 
 Spawners retry for 60s. Check:
-
 ```bash
 ros2 control list_controllers
-ros2 control list_hardware_components
+```
+Expected: `joint_state_broadcaster` and `platform_velocity_controller` active.
+
+### Action server not available
+
+```
+[WARN] [fleet_manager_node-1]: Action server not available for cpr_a200_0000
+```
+Ensure `mission.launch.py` (Terminal 5) is running before LLM commands.
+
+### No scan_2d data
+
+VFH planner waits 3s for scan data, then drives blind at reduced speed. Check obstacle_detector output:
+```bash
+ros2 topic echo /cpr_a200_0000/scan_2d
 ```
 
-Normal output:
-```
-[spawner-*] Configured and activated joint_state_broadcaster
-[spawner-*] Configured and activated platform_velocity_controller
-```
+### Teleop fails with termios.error
 
-### Teleop crashes with `termios.error`
+Run in a real terminal (not headless/script).
 
-Non-TTY environment — run in a real terminal window, not headless/script.
+### Odometry topic
+
+All nodes subscribe to `platform/odom` (diff_drive controller). EKF-filtered `platform/odom/filtered` only exists when GPS/IMU fusion is explicitly launched.

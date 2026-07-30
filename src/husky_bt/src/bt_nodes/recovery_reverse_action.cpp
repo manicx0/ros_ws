@@ -12,7 +12,7 @@ public:
       cmd_pub_ = node_->create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", 10);
       recovery_pub_ = node_->create_publisher<std_msgs::msg::Bool>("recovery_active", 10);
       odom_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
-        "platform/odom/filtered", 10,
+        "platform/odom", 10,
         std::bind(&RecoveryReverse::odomCallback, this, std::placeholders::_1));
       scan_sub_ = node_->create_subscription<sensor_msgs::msg::LaserScan>(
         "scan_2d", 10,

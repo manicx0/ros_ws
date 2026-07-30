@@ -86,6 +86,10 @@ public:
     RCLCPP_INFO(get_logger(), "Fleet manager initialized with %zu robots", robots_.size());
   }
 
+  ~FleetManagerNode() {
+    shutting_down_ = true;
+  }
+
 private:
   void loadFleetConfig(const std::string& config_file) {
     YAML::Node config = YAML::LoadFile(config_file);
@@ -205,6 +209,10 @@ private:
   }
 
   void checkActiveGoals() {
+    if (shutting_down_) {
+      return;
+    }
+
     std::shared_ptr<GoalHandleFleetNavigate> handle;
     std::shared_ptr<FleetNavigate::Result> results;
 
@@ -272,7 +280,11 @@ private:
     }
 
     if (handle) {
-      handle->succeed(results);
+      try {
+        handle->succeed(results);
+      } catch (const std::runtime_error& e) {
+        RCLCPP_WARN(get_logger(), "Goal result publish skipped during shutdown: %s", e.what());
+      }
     }
   }
 
@@ -363,6 +375,7 @@ private:
   std::shared_ptr<GoalHandleFleetNavigate> active_fleet_goal_;
   std::shared_ptr<FleetNavigate::Result> fleet_results_;
   std::map<std::string, std::shared_ptr<ActiveGoal>> active_goals_;
+  bool shutting_down_{false};
 };
 
 int main(int argc, char** argv) {

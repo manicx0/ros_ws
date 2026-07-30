@@ -11,8 +11,8 @@ from ament_index_python.packages import get_package_share_directory
 def generate_launch_description():
     connector_arg = DeclareLaunchArgument(
         'connector',
-        default_value='gemini_connector_node.py',
-        description='Which LLM connector to launch: gemini_connector_node.py (Gemini), deepseek_connector_node.py (DeepSeek official API), or ollama_connector_node.py (local Ollama)'
+        default_value='deepseek_connector_node.py',
+        description='Which LLM connector to launch: deepseek_connector_node.py (DeepSeek, default), gemini_connector_node.py (Gemini), or ollama_connector_node.py (local Ollama)'
     )
 
     model_arg = DeclareLaunchArgument(
@@ -52,7 +52,7 @@ def generate_launch_description():
         executable='llm_validator_node.py',
         name='llm_validator',
         output='screen',
-        parameters=[{'fleet_config_path': fleet_config_path}]
+        parameters=[{'fleet_config_path': fleet_config_path, 'waypoints_config_path': waypoints_config_path}]
     )
 
     connector_node = Node(

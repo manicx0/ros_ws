@@ -31,19 +31,19 @@ ament_target_dependencies(obstacle_detector_node rclcpp sensor_msgs geometry_msg
 
 # 3. VFH Planner Node (replaces path_planner + pure_pursuit)
 add_executable(vfh_planner_node src/vfh_planner_node.cpp)
-ament_target_dependencies(vfh_planner_node rclcpp geometry_msgs nav_msgs sensor_msgs std_msgs tf2 tf2_geometry_msgs)
+ament_target_dependencies(vfh_planner_node rclcpp geometry_msgs nav_msgs sensor_msgs std_msgs husky_msgs tf2 tf2_geometry_msgs)
 
 # 4. EKF GPS Wrapper Node
 add_executable(ekf_gps_node src/ekf_gps_node.cpp)
 ament_target_dependencies(ekf_gps_node rclcpp)
 
-# 5. Goal Pose Relay Node
-add_executable(goal_pose_relay_node src/goal_pose_relay_node.cpp)
-ament_target_dependencies(goal_pose_relay_node rclcpp geometry_msgs)
-
-# 6. Stuck Detector Node
+# 5. Stuck Detector Node
 add_executable(stuck_detector_node src/stuck_detector_node.cpp)
 ament_target_dependencies(stuck_detector_node rclcpp geometry_msgs nav_msgs std_msgs husky_msgs)
+
+# 6. Topic Health Monitor Node
+add_executable(topic_health_node src/topic_health_node.cpp)
+ament_target_dependencies(topic_health_node rclcpp geometry_msgs sensor_msgs nav_msgs std_msgs)
 
 # Install targets
 install(TARGETS
@@ -51,8 +51,8 @@ install(TARGETS
   obstacle_detector_node
   vfh_planner_node
   ekf_gps_node
-  goal_pose_relay_node
   stuck_detector_node
+  topic_health_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

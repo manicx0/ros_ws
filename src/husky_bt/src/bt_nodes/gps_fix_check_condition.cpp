@@ -24,17 +24,40 @@ private:
   }
 
   BT::NodeStatus checkFix() {
-    if (!has_received_) {
-      if ((node_->now() - start_time_).seconds() > 5.0) {
-        config().blackboard->set<bool>("gps_fix_lost", false);
-        return BT::NodeStatus::SUCCESS;
+    double uptime = (node_->now() - start_time_).seconds();
+
+    if (has_received_) {
+      RCLCPP_DEBUG(node_->get_logger(),
+        "GpsFixCheck: fix_status=%d has_fix=%d age=%.1fs",
+        fix_status_, has_fix_, (node_->now() - last_fix_time_).seconds());
+    } else {
+      RCLCPP_DEBUG(node_->get_logger(),
+        "GpsFixCheck: no data received yet (uptime=%.1fs)", uptime);
+    }
+
+    if (uptime > 5.0) {
+      if (!has_received_) {
+        RCLCPP_WARN(node_->get_logger(),
+          "No GPS data received after 5s — proceeding without GPS");
+      } else if (!has_fix_) {
+        RCLCPP_WARN(node_->get_logger(),
+          "GPS has NO_FIX (status=%d) after 5s — proceeding without valid fix",
+          fix_status_);
+      } else if ((node_->now() - last_fix_time_).seconds() > 5.0) {
+        RCLCPP_WARN(node_->get_logger(),
+          "GPS fix stale for %.1fs — proceeding without GPS",
+          (node_->now() - last_fix_time_).seconds());
       }
+      config().blackboard->set<bool>("gps_fix_lost", false);
+      return BT::NodeStatus::SUCCESS;
+    }
+
+    if (!has_received_) {
       config().blackboard->set<bool>("gps_fix_lost", true);
       return BT::NodeStatus::FAILURE;
     }
 
     auto elapsed = (node_->now() - last_fix_time_).seconds();
-
     if (elapsed > 5.0) {
       config().blackboard->set<bool>("gps_fix_lost", true);
       return BT::NodeStatus::FAILURE;

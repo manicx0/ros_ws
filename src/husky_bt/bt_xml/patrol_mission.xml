@@ -13,35 +13,24 @@
       <!-- 4. Idle check — no goal in queue -->
       <IdleMonitor/>
 
-      <!-- 5. Mission loop -->
-      <KeepRunningUntilFailure>
-        <Sequence>
-          <!-- Stuck handling: reverse, rotate, then check if still stuck -->
-          <Fallback>
-            <StuckCheck/>
-            <Fallback>
-              <Sequence>
-                <RecoveryReverse/>
-                <RecoveryRotate/>
-                <StuckCheck/>
-              </Sequence>
-              <RecoveryFailed/>
-            </Fallback>
-          </Fallback>
-
-          <!-- Obstacle handling: safe → navigate, blocked → stop -->
+      <!-- 5. Mission execution -->
+      <Sequence>
+        <!-- Stuck handling: reverse, rotate, then check if still stuck -->
+        <Fallback>
+          <StuckCheck/>
           <Fallback>
             <Sequence>
-              <AvoidanceEnabledCondition/>
-              <ObstacleCheck/>
+              <RecoveryReverse/>
+              <RecoveryRotate/>
+              <StuckCheck/>
             </Sequence>
-            <StopAndWait/>
+            <RecoveryFailed/>
           </Fallback>
+        </Fallback>
 
-          <!-- Navigation execution -->
-          <NavigateToGoal goal="{target_pose}"/>
-        </Sequence>
-      </KeepRunningUntilFailure>
+        <!-- Navigation execution (VFH planner handles obstacle avoidance) -->
+        <NavigateToGoal goal="{target_pose}"/>
+      </Sequence>
     </Sequence>
   </BehaviorTree>
 </root>

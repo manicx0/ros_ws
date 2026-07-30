@@ -2,10 +2,10 @@
 #include <behaviortree_cpp/action_node.h>
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
-#include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "husky_msgs/msg/goal_event.hpp"
+#include "husky_msgs/msg/goal_reached.hpp"
 
 class NavigateToGoal : public BT::StatefulActionNode {
 public:
@@ -15,9 +15,9 @@ public:
       cmd_pub_ = node_->create_publisher<geometry_msgs::msg::TwistStamped>("cmd_vel", 10);
       clear_path_pub_ = node_->create_publisher<nav_msgs::msg::Path>("global_path", 10);
       event_pub_ = node_->create_publisher<husky_msgs::msg::GoalEvent>("/fleet/goal_events", 10);
-      odom_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
-        "platform/odom/filtered", 10,
-        std::bind(&NavigateToGoal::odomCallback, this, std::placeholders::_1));
+      vfh_reached_sub_ = node_->create_subscription<husky_msgs::msg::GoalReached>(
+        "vfh_goal_reached", 10,
+        std::bind(&NavigateToGoal::vfhReachedCallback, this, std::placeholders::_1));
     }
 
   static BT::PortsList providedPorts() {
@@ -28,20 +28,15 @@ public:
   BT::NodeStatus onStart() override {
     getInput("goal", goal_);
     goal_pub_->publish(goal_);
-    obstacle_detected_ = false;
+    vfh_goal_reached_ = false;
+    start_time_ = node_->now();
     config().blackboard->set<bool>("goal_reached", false);
     config().blackboard->set<bool>("mission_active", true);
     return BT::NodeStatus::RUNNING;
   }
 
   BT::NodeStatus onRunning() override {
-    bool obstacle = false;
-    if (config().blackboard->get<bool>("obstacle_detected", obstacle) && obstacle) {
-      stopRobot();
-      return BT::NodeStatus::RUNNING;
-    }
-
-    if (distanceToGoal() < 0.5) {
+    if (vfh_goal_reached_ && msg_time_ > start_time_) {
       setOutput("goal_reached", true);
       onSuccess();
       return BT::NodeStatus::SUCCESS;
@@ -52,15 +47,9 @@ public:
   void onHalted() override { stopRobot(); }
 
 private:
-  void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
-    current_x_ = msg->pose.pose.position.x;
-    current_y_ = msg->pose.pose.position.y;
-  }
-
-  double distanceToGoal() {
-    double dx = goal_.pose.position.x - current_x_;
-    double dy = goal_.pose.position.y - current_y_;
-    return std::sqrt(dx * dx + dy * dy);
+  void vfhReachedCallback(const husky_msgs::msg::GoalReached::SharedPtr msg) {
+    msg_time_ = msg->stamp;
+    vfh_goal_reached_ = msg->reached;
   }
 
   void stopRobot() {
@@ -96,8 +85,8 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr cmd_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr clear_path_pub_;
   rclcpp::Publisher<husky_msgs::msg::GoalEvent>::SharedPtr event_pub_;
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
-  bool obstacle_detected_ = false;
-  double current_x_ = 0.0;
-  double current_y_ = 0.0;
+  rclcpp::Subscription<husky_msgs::msg::GoalReached>::SharedPtr vfh_reached_sub_;
+  bool vfh_goal_reached_ = false;
+  rclcpp::Time start_time_;
+  rclcpp::Time msg_time_;
 };

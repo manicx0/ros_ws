@@ -25,3 +25,4 @@ vfh_planner:
     rotation_speed: 0.4
     rotation_tolerance: 0.1
     rotation_timeout: 10.0
+    facing_goal_threshold: 0.3
