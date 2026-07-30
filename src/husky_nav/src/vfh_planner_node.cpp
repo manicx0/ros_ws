@@ -135,7 +135,9 @@ private:
 
     // Check if we have scan data
     bool has_scan = (latest_scan_ != nullptr);
-    bool scan_timeout_exceeded = (this->now() - start_time_).seconds() > scan_timeout_;
+    rclcpp::Time now = this->now();
+    bool clock_valid = (now.seconds() > 0.0);
+    bool scan_timeout_exceeded = clock_valid && (now - start_time_).seconds() > scan_timeout_;
 
     // If no scan data but timeout exceeded, drive blind with reduced speed
     if (!has_scan && scan_timeout_exceeded) {
@@ -156,7 +158,7 @@ private:
         double goal_bearing_robot = normalizeAngle(goal_bearing_world - robot_pose_.theta);
 
         geometry_msgs::msg::TwistStamped cmd;
-        cmd.header.stamp = this->now();
+        cmd.header.stamp = now;
 
         if (facing_goal_) {
           if (std::abs(goal_bearing_robot) > facing_goal_threshold_) {
@@ -196,10 +198,10 @@ private:
     }
 
     geometry_msgs::msg::TwistStamped cmd;
-    cmd.header.stamp = this->now();
+    cmd.header.stamp = now;
 
     if (rotation_active_) {
-      double elapsed = (this->now() - rotation_start_time_).seconds();
+      double elapsed = (now - rotation_start_time_).seconds();
       double yaw_delta = normalizeAngle(robot_pose_.theta - rotation_start_yaw_);
       double remaining = rotation_goal_ - yaw_delta;
 
