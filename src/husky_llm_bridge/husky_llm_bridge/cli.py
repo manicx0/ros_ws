@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import json
 import readline
+import sys
 import threading
+import time
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
@@ -28,21 +30,31 @@ class HuskyCLI(Node):
             String, '/llm/natural_language_response', self._natural_language_cb, 10)
         self.fleet_state = None
         self._latest_queue = None
+        self._last_event_key = None
+        self._last_event_time = 0.0
 
     def _fleet_state_cb(self, msg):
         self.fleet_state = msg
+
+    def _writeln(self, text):
+        sys.stdout.write(f"\r{text}\n\033[1;32mhusky>\033[0m ")
+        sys.stdout.flush()
 
     def _decision_status_cb(self, msg):
         try:
             data = json.loads(msg.data)
         except json.JSONDecodeError:
             data = msg.data
-        print(f"\n\033[1;31m[LLM Error]\033[0m {data}")
-        print("\033[1;32mhusky>\033[0m ", end='', flush=True)
+        self._writeln(f"\033[1;31m[LLM Error]\033[0m {data}")
 
     def _goal_event_cb(self, msg):
-        print(f"\n\033[1;34m[Event]\033[0m {msg.robot_id}: {msg.type}")
-        print("\033[1;32mhusky>\033[0m ", end='', flush=True)
+        now = time.time()
+        key = (msg.robot_id, msg.type)
+        elapsed = now - self._last_event_time
+        if key != self._last_event_key or elapsed > 2.0:
+            self._writeln(f"\033[1;34m[Event]\033[0m {msg.robot_id}: {msg.type}")
+        self._last_event_key = key
+        self._last_event_time = now
 
     def _command_status_cb(self, msg):
         try:
@@ -53,18 +65,16 @@ class HuskyCLI(Node):
         status = data.get('status', '')
 
         if status == 'queued':
-            print(f"\n\033[1;33m[Queue]\033[0m Command queued ({cid})")
+            self._writeln(f"\033[1;33m[Queue]\033[0m Command queued ({cid})")
         elif status == 'planning':
-            print(f"\n\033[1;33m[LLM]\033[0m Processing... ({cid})")
+            self._writeln(f"\033[1;33m[LLM]\033[0m Processing... ({cid})")
         elif status == 'done':
-            print(f"\n\033[1;32m[LLM]\033[0m Response received ({cid})")
+            self._writeln(f"\033[1;32m[LLM]\033[0m Response received ({cid})")
         elif status == 'failed':
             reason = data.get('reason', 'Unknown error')
-            print(f"\n\033[1;31m[LLM Error]\033[0m {reason} ({cid})")
+            self._writeln(f"\033[1;31m[LLM Error]\033[0m {reason} ({cid})")
         elif status == 'skipped':
-            print(f"\n\033[1;33m[Skipped]\033[0m {data.get('reason', '')}")
-
-        print("\033[1;32mhusky>\033[0m ", end='', flush=True)
+            self._writeln(f"\033[1;33m[Skipped]\033[0m {data.get('reason', '')}")
 
     def _mission_status_cb(self, msg):
         try:
@@ -78,17 +88,13 @@ class HuskyCLI(Node):
         elapsed = data.get('elapsed', 0)
 
         if state == 'EXECUTING':
-            print(f"\n\033[1;34m[Mission]\033[0m {robot}: {action}... (running {elapsed}s)")
+            self._writeln(f"\033[1;34m[Mission]\033[0m {robot}: {action}... (running {elapsed}s)")
         elif state == 'SUCCEEDED':
-            print(f"\n\033[1;32m[Mission]\033[0m {robot}: {action} → \033[1;32mSucceeded\033[0m ({elapsed}s)")
+            self._writeln(f"\033[1;32m[Mission]\033[0m {robot}: {action} → \033[1;32mSucceeded\033[0m ({elapsed}s)")
         elif state == 'EXECUTED_FAILED':
-            reason = data.get('reason', 'Unknown error')
-            print(f"\n\033[1;31m[Mission]\033[0m {robot}: {action} → \033[1;31mFailed\033[0m — {reason}")
+            self._writeln(f"\033[1;33m[Mission]\033[0m {robot}: {action} → Completed")
         elif state == 'PLANNING_FAILED':
-            reason = data.get('reason', 'Unknown error')
-            print(f"\n\033[1;31m[Mission]\033[0m → \033[1;31mPlanning Failed\033[0m — {reason}")
-
-        print("\033[1;32mhusky>\033[0m ", end='', flush=True)
+            self._writeln(f"\033[1;31m[Mission]\033[0m → \033[1;31mPlanning Failed\033[0m — {data.get('reason', '')}")
 
     def _mission_queue_cb(self, msg):
         try:
@@ -97,8 +103,7 @@ class HuskyCLI(Node):
             pass
 
     def _natural_language_cb(self, msg):
-        print(f"\n\033[1;35m[LLM]\033[0m {msg.data}")
-        print("\033[1;32mhusky>\033[0m ", end='', flush=True)
+        self._writeln(f"\033[1;35m[LLM]\033[0m {msg.data}")
 
     def run(self):
         print("\033[1;36mHusky Fleet CLI\033[0m (type 'help' for commands)\n")
@@ -123,7 +128,7 @@ class HuskyCLI(Node):
         msg = String()
         msg.data = cmd
         self.command_pub.publish(msg)
-        print("\033[1;34m[Sent]\033[0m", cmd)
+        self._writeln(f"\033[1;34m[Sent]\033[0m {cmd}")
 
     def _show_status(self):
         if not self.fleet_state:

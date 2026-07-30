@@ -95,7 +95,10 @@ public:
   }
 
   void tick() {
-    tree_.tickWhileRunning();
+    auto status = tree_.tickExactlyOnce();
+    if (status != BT::NodeStatus::RUNNING) {
+      tree_.haltTree();
+    }
   }
 
 private:
@@ -160,21 +163,11 @@ private:
 
   rclcpp_action::CancelResponse handleCancel(
     const std::shared_ptr<GoalHandleNavigateTo> handle) {
-    publishZeroVelocity();
-    if (blackboard_) {
-      blackboard_->set<bool>("mission_active", false);
-    }
-    tree_.haltTree();
-    if (blackboard_) {
-      blackboard_->set<bool>("has_goal", false);
-    }
-
     auto result = std::make_shared<NavigateTo::Result>();
     result->success = false;
     result->message = "Cancelled";
     handle->abort(result);
-    waiting_for_result_ = false;
-    active_goal_.reset();
+    resetAfterGoalCompletion("cancelled");
 
     return rclcpp_action::CancelResponse::ACCEPT;
   }
@@ -182,17 +175,18 @@ private:
   void handleAccepted(const std::shared_ptr<GoalHandleNavigateTo> handle) {
     if (active_goal_ && waiting_for_result_) {
       publishZeroVelocity();
-      if (blackboard_) {
-        blackboard_->set<bool>("mission_active", false);
-      }
       tree_.haltTree();
 
       auto old_result = std::make_shared<NavigateTo::Result>();
       old_result->success = false;
       old_result->message = "Preempted by new goal";
       active_goal_->abort(old_result);
-      active_goal_.reset();
+      resetAfterGoalCompletion("preempted by new goal");
     }
+
+    // Clear any stale terminal state from a previously completed or preempted
+    // goal so the BT restarts cleanly for the new goal.
+    resetActionServerState("preparing for new goal");
 
     if (emergency_stop_ && emergency_stop_source_ == EM_STOP_SOURCE_SOFTWARE) {
       RCLCPP_INFO(get_logger(), "Auto-clearing software emergency_stop on new goal");
@@ -216,6 +210,7 @@ private:
     if (blackboard_) {
       blackboard_->set<geometry_msgs::msg::PoseStamped>("target_pose", handle->get_goal()->target_pose);
       blackboard_->set<bool>("has_goal", true);
+      blackboard_->set<bool>("goal_reached", false);
       blackboard_->set<int>("recovery_attempts", 0);
     }
 
@@ -267,34 +262,22 @@ private:
     bool emergency_stop = false;
     (void)blackboard_->get<bool>("emergency_stop", emergency_stop);
     if (emergency_stop) {
-      publishZeroVelocity();
-      blackboard_->set<bool>("mission_active", false);
-      tree_.haltTree();
-      blackboard_->set<bool>("has_goal", false);
-
       auto result = std::make_shared<NavigateTo::Result>();
       result->success = false;
       result->message = "Emergency stop";
       active_goal_->abort(result);
-      waiting_for_result_ = false;
-      active_goal_.reset();
+      resetAfterGoalCompletion("emergency stop");
       return;
     }
 
     bool recovery_failed = false;
     (void)blackboard_->get<bool>("recovery_failed", recovery_failed);
     if (recovery_failed) {
-      publishZeroVelocity();
-      blackboard_->set<bool>("mission_active", false);
-      blackboard_->set<bool>("has_goal", false);
-      blackboard_->set<bool>("recovery_failed", false);
-
       auto result = std::make_shared<NavigateTo::Result>();
       result->success = false;
       result->message = "Stuck - recovery failed";
       active_goal_->abort(result);
-      waiting_for_result_ = false;
-      active_goal_.reset();
+      resetAfterGoalCompletion("recovery failed");
       return;
     }
 
@@ -327,14 +310,13 @@ private:
       result->success = true;
       result->message = "Goal reached";
       active_goal_->succeed(result);
+      resetAfterGoalCompletion("goal reached");
     } else {
       result->success = false;
       result->message = "Navigation incomplete";
       active_goal_->abort(result);
+      resetAfterGoalCompletion("navigation incomplete");
     }
-
-    waiting_for_result_ = false;
-    active_goal_.reset();
   }
 
   void publishZeroVelocity() {
@@ -356,6 +338,27 @@ private:
       }
     }
     event_pub_->publish(event);
+  }
+
+  void resetActionServerState(const std::string& reason) {
+    publishZeroVelocity();
+    if (blackboard_) {
+      geometry_msgs::msg::PoseStamped empty_pose;
+      blackboard_->set<geometry_msgs::msg::PoseStamped>("target_pose", empty_pose);
+      blackboard_->set<bool>("has_goal", false);
+      blackboard_->set<bool>("goal_reached", false);
+      blackboard_->set<bool>("mission_active", false);
+      blackboard_->set<bool>("idle", true);
+      blackboard_->set<int>("recovery_attempts", 0);
+    }
+    waiting_for_result_ = false;
+    active_goal_.reset();
+    RCLCPP_INFO(get_logger(), "Ready for next goal (%s)", reason.c_str());
+  }
+
+  void resetAfterGoalCompletion(const std::string& reason) {
+    resetActionServerState(reason);
+    tree_.haltTree();
   }
 
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_sub_;
