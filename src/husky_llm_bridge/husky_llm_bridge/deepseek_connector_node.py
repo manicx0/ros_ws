@@ -65,6 +65,13 @@ class DeepSeekConnectorNode(Node):
                 10)
             self.get_logger().info(f'Subscribed to odometry for {robot_id} on {odom_topic}')
 
+        self._mission_status_sub = self.create_subscription(
+            String,
+            '/llm/mission_status',
+            self._mission_status_callback,
+            10
+        )
+
         self._command_queue = queue.Queue()
         self._worker_thread = threading.Thread(target=self._process_queue, daemon=True)
         self._worker_thread.start()
@@ -119,6 +126,14 @@ class DeepSeekConnectorNode(Node):
         except Exception as e:
             self.get_logger().error(f'Failed to load fleet config: {e}')
             return []
+
+    def _mission_status_callback(self, msg: String):
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        if data.get('state') in ('SUCCEEDED', 'EXECUTED_FAILED'):
+            self._last_command_text = None
 
     def command_callback(self, msg: String):
         command = msg.data.strip()
