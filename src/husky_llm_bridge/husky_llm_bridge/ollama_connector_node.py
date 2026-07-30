@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import json
 import math
-import time
 import uuid
 import queue
 import threading
@@ -52,7 +51,6 @@ class OllamaConnectorNode(Node):
         self.latest_fleet_state = None
         self._last_command_id = None
         self._last_command_text = None
-        self._last_command_time = 0.0
         self.robot_poses = {}
         for robot_id in self.valid_robots:
             odom_topic = f'/{robot_id}/platform/odom'
@@ -61,13 +59,6 @@ class OllamaConnectorNode(Node):
                 lambda msg, rid=robot_id: self.odom_callback(msg, rid),
                 10)
             self.get_logger().info(f'Subscribed to odometry for {robot_id} on {odom_topic}')
-
-        self._mission_status_sub = self.create_subscription(
-            String,
-            '/llm/mission_status',
-            self._mission_status_callback,
-            10
-        )
 
         self._command_queue = queue.Queue()
         self._worker_thread = threading.Thread(target=self._process_queue, daemon=True)
@@ -134,24 +125,12 @@ class OllamaConnectorNode(Node):
             self.get_logger().error(f'Failed to load fleet config: {e}')
             return []
 
-    def _mission_status_callback(self, msg: String):
-        try:
-            data = json.loads(msg.data)
-        except json.JSONDecodeError:
-            return
-        state = data.get('state', '')
-        if state in ('SUCCEEDED', 'EXECUTED_FAILED'):
-            self._last_command_text = None
-            self._last_command_time = 0.0
-            self.get_logger().info('Mission completed — cleared dedup cache')
-
     def command_callback(self, msg: String):
         command = msg.data.strip()
         if not command:
             return
         command_id = str(uuid.uuid4())
-        elapsed = time.time() - self._last_command_time if self._last_command_time else 999.0
-        if command == self._last_command_text and elapsed < 30.0:
+        if command == self._last_command_text:
             if self._last_command_id:
                 self._publish_command_status(
                     command_id, 'skipped',
@@ -160,7 +139,6 @@ class OllamaConnectorNode(Node):
         self.get_logger().info(f'[{command_id[:8]}] Received command: {command}')
         self._last_command_id = command_id
         self._last_command_text = command
-        self._last_command_time = time.time()
         self._publish_command_status(command_id, 'queued')
         self._command_queue.put((command_id, command))
 
