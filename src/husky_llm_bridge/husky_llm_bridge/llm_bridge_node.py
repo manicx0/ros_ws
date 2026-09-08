@@ -12,6 +12,7 @@ from rclpy.action import ActionClient
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import String, Float64, Bool
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
 from husky_msgs.msg import FleetState, FleetGoal, GoalEvent
 from husky_msgs.action import FleetNavigate
 from husky_msgs.srv import FleetSetState
@@ -94,6 +95,15 @@ class LLMBridgeNode(Node):
         self._active_mission: Optional[MissionEntry] = None
         self._history = []
 
+        self._obstacle_detected = {}
+        for robot_id in self.valid_robots:
+            scan_topic = f'/{robot_id}/scan_2d'
+            self.create_subscription(
+                LaserScan, scan_topic,
+                lambda msg, rid=robot_id: self.scan_callback(msg, rid),
+                10)
+            self.get_logger().info(f'Subscribed to scan_2d for {robot_id} on {scan_topic}')
+
         self.robot_poses = {}
         for robot_id in self.valid_robots:
             odom_topic = f'/{robot_id}/platform/odom'
@@ -155,6 +165,20 @@ class LLMBridgeNode(Node):
             'y': pose.position.y,
             'yaw': yaw
         }
+
+    def scan_callback(self, msg: LaserScan, robot_id: str):
+        min_range = msg.range_max
+        obstacle_count = 0
+
+        for i, r in enumerate(msg.ranges):
+            angle = msg.angle_min + i * msg.angle_increment
+            if -0.5 < angle < 0.5:
+                if msg.range_min < r < min_range:
+                    min_range = r
+                    if r < 1.5:
+                        obstacle_count += 1
+
+        self._obstacle_detected[robot_id] = (obstacle_count > 3)
 
     def log_fleet_state(self, msg: FleetState):
         for i, robot_id in enumerate(msg.robot_ids):
@@ -272,6 +296,8 @@ class LLMBridgeNode(Node):
             self._execute_go_home(self._active_mission)
         elif action == 'clear_emergency_stop':
             self._execute_clear_emergency_stop(self._active_mission)
+        elif action == 'patrol':
+            self._execute_patrol(self._active_mission)
         else:
             self.get_logger().error(f'Unknown action: {action}')
             self._mission_completed(False, f'Unknown action: {action}')
@@ -295,6 +321,10 @@ class LLMBridgeNode(Node):
             return
         elapsed = time.time() - self._active_mission.started_at
         if elapsed > self.navigation_timeout:
+            if self._active_mission.action == 'navigate' and '_waypoint_queue' in self._active_mission.params:
+                return
+            if self._active_mission.action == 'patrol' and '_waypoint_queue' in self._active_mission.params:
+                return
             self.get_logger().warn(
                 f'Mission {self._active_mission.action} for {self._active_mission.robot_id} '
                 f'timed out after {elapsed:.1f}s (limit: {self.navigation_timeout}s)'
@@ -360,80 +390,59 @@ class LLMBridgeNode(Node):
         msg.data = json.dumps({'active': active, 'pending': pending, 'history': history})
         self.mission_queue_pub.publish(msg)
 
-    def _execute_navigate(self, mission: MissionEntry):
-        robot_id = mission.robot_id
+    def _resolve_all_waypoints(self, mission: MissionEntry):
         params = mission.params
+        robot_id = mission.robot_id
+        queue = []
 
-        relative = params.get('relative')
-        if relative:
-            resolved = self._resolve_relative(mission)
-        else:
-            resolved = self._resolve_waypoint(params)
-
-        if resolved is None:
-            self.get_logger().error(f'Could not resolve waypoint for {robot_id}')
-            self._mission_completed(False, 'Could not resolve waypoint')
-            return
-
-        x, y, yaw = resolved
-        self.get_logger().info(f'Resolved waypoint: x={x}, y={y}, yaw={yaw}')
-
-        fleet_goal = FleetGoal()
-        fleet_goal.robot_id = robot_id
-
-        pose = PoseStamped()
-        pose.header.frame_id = 'odom'
-        pose.pose.position.x = float(x)
-        pose.pose.position.y = float(y)
-        pose.pose.position.z = 0.0
-
-        if yaw is not None:
-            pose.pose.orientation.z = math.sin(yaw / 2.0)
-            pose.pose.orientation.w = math.cos(yaw / 2.0)
-        else:
-            pose.pose.orientation.w = 1.0
-
-        fleet_goal.target_pose = pose
-
-        goal = FleetNavigate.Goal()
-        goal.goals.append(fleet_goal)
-
-        if not self.fleet_navigate_client.wait_for_server(timeout_sec=5.0):
-            self._mission_completed(False, 'Fleet navigate action server not available')
-            return
-
-        self.get_logger().info(f'Sending navigate goal for {robot_id}')
-        future = self.fleet_navigate_client.send_goal_async(goal)
-        future.add_done_callback(self._navigate_goal_response_callback)
-
-    def _resolve_waypoint(self, params):
+        waypoints = params.get('waypoints', [])
+        waypoint_names = params.get('waypoint_names', [])
         waypoint_name = params.get('waypoint_name')
-        waypoint_names = params.get('waypoint_names')
-        waypoints = params.get('waypoints')
-
-        if waypoint_name:
-            wp = self.waypoint_loader.get_waypoint(waypoint_name)
-            if wp:
-                return wp.get('x'), wp.get('y'), wp.get('yaw')
-            self.get_logger().error(f'Unknown waypoint name: {waypoint_name}')
-            return None
-
-        if waypoint_names:
-            wp = self.waypoint_loader.get_waypoint(waypoint_names[0])
-            if wp:
-                return wp.get('x'), wp.get('y'), wp.get('yaw')
-            self.get_logger().error(f'Unknown waypoint name: {waypoint_names[0]}')
-            return None
+        relative = params.get('relative')
 
         if waypoints:
-            wp = waypoints[0]
-            if 'x' in wp and 'y' in wp:
-                return wp['x'], wp['y'], wp.get('yaw')
-            if 'lat' in wp and 'lon' in wp:
-                x, y = self._gps_to_xy(wp['lat'], wp['lon'])
-                return x, y, wp.get('yaw')
+            for wp in waypoints:
+                if 'x' in wp and 'y' in wp:
+                    queue.append({
+                        'x': float(wp['x']), 'y': float(wp['y']),
+                        'yaw': wp.get('yaw'),
+                        'source': f"({wp['x']}, {wp['y']})"
+                    })
+                elif 'lat' in wp and 'lon' in wp:
+                    x, y = self._gps_to_xy(wp['lat'], wp['lon'])
+                    if x is not None:
+                        queue.append({
+                            'x': x, 'y': y, 'yaw': wp.get('yaw'),
+                            'source': f"GPS({wp['lat']}, {wp['lon']})"
+                        })
+        elif waypoint_names:
+            for name in waypoint_names:
+                wp = self.waypoint_loader.get_waypoint(name)
+                if wp:
+                    queue.append({
+                        'x': float(wp.get('x', 0)), 'y': float(wp.get('y', 0)),
+                        'yaw': wp.get('yaw'),
+                        'source': f"waypoint '{name}'"
+                    })
+                else:
+                    self.get_logger().error(f'Unknown waypoint name: {name}')
+        elif waypoint_name:
+            wp = self.waypoint_loader.get_waypoint(waypoint_name)
+            if wp:
+                queue.append({
+                    'x': float(wp.get('x', 0)), 'y': float(wp.get('y', 0)),
+                    'yaw': wp.get('yaw'),
+                    'source': f"waypoint '{waypoint_name}'"
+                })
+        elif relative:
+            resolved = self._resolve_relative(mission)
+            if resolved:
+                x, y, yaw = resolved
+                queue.append({
+                    'x': x, 'y': y, 'yaw': yaw, 'source': 'relative move'
+                })
 
-        return None
+        return queue
 
     def _resolve_relative(self, mission: MissionEntry):
         robot_id = mission.robot_id
@@ -477,21 +486,217 @@ class LLMBridgeNode(Node):
         y = (lat - origin['lat']) * 6371000.0
         return x, y
 
-    def _navigate_goal_response_callback(self, future):
-        goal_handle = future.result()
-        if not goal_handle.accepted:
-            self._mission_completed(False, 'Fleet navigate goal rejected')
+    def _execute_navigate(self, mission: MissionEntry):
+        queue = self._resolve_all_waypoints(mission)
+        if not queue:
+            self._mission_completed(False, 'Could not resolve any waypoints')
             return
 
-        self.get_logger().info('Fleet navigate goal accepted, waiting for result...')
-        result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self._navigate_result_callback)
+        mission.params['_waypoint_queue'] = queue
+        mission.params['_failed_waypoints'] = []
+        self.get_logger().info(
+            f"Sending {len(queue)} waypoint(s) for {mission.robot_id}: "
+            + ', '.join(wp['source'] for wp in queue))
+        self._send_next_waypoint(mission)
 
-    def _navigate_result_callback(self, future):
+    def _execute_patrol(self, mission: MissionEntry):
+        queue = self._resolve_all_waypoints(mission)
+        if not queue:
+            self._mission_completed(False, 'Could not resolve any waypoints')
+            return
+
+        mission.params['_waypoint_queue'] = queue
+        mission.params['_failed_waypoints'] = []
+        mission.params['_contingency_triggered'] = None
+        mission.params['_patrol_mode'] = True
+
+        on_obstacle = mission.params.get('on_obstacle')
+        on_stuck = mission.params.get('on_stuck')
+
+        self.get_logger().info(
+            f"Patrol: {len(queue)} waypoint(s) for {mission.robot_id}, "
+            f"on_obstacle={on_obstacle}, on_stuck={on_stuck}")
+
+        self._send_next_patrol_waypoint(mission)
+
+    def _send_next_patrol_waypoint(self, mission: MissionEntry):
+        robot_id = mission.robot_id
+        on_obstacle = mission.params.get('on_obstacle')
+        on_stuck = mission.params.get('on_stuck')
+
+        if mission.params.get('_contingency_triggered'):
+            self._handle_patrol_contingency(mission)
+            return
+
+        if on_obstacle and self._obstacle_detected.get(robot_id, False):
+            self.get_logger().warn(f"Patrol: obstacle detected for {robot_id}, triggering on_obstacle={on_obstacle}")
+            mission.params['_contingency_triggered'] = ('obstacle', on_obstacle)
+            self._handle_patrol_contingency(mission)
+            return
+
+        queue = mission.params.get('_waypoint_queue', [])
+        if not queue:
+            failed = mission.params.get('_failed_waypoints', [])
+            reason = 'Patrol completed'
+            if failed:
+                reason += f' ({len(failed)} failed: {"; ".join(failed)})'
+            self._mission_completed(True, reason)
+            return
+
+        wp = queue[0]
+        mission.params['_waypoint_queue'] = queue[1:]
+
+        fleet_goal = FleetGoal()
+        fleet_goal.robot_id = robot_id
+
+        pose = PoseStamped()
+        pose.header.frame_id = 'odom'
+        pose.pose.position.x = float(wp['x'])
+        pose.pose.position.y = float(wp['y'])
+        pose.pose.position.z = 0.0
+        if wp.get('yaw') is not None:
+            pose.pose.orientation.z = math.sin(float(wp['yaw']) / 2.0)
+            pose.pose.orientation.w = math.cos(float(wp['yaw']) / 2.0)
+        else:
+            pose.pose.orientation.w = 1.0
+        fleet_goal.target_pose = pose
+
+        goal = FleetNavigate.Goal()
+        goal.goals.append(fleet_goal)
+
+        if not self.fleet_navigate_client.wait_for_server(timeout_sec=5.0):
+            self._mission_completed(False, 'Fleet navigate action server not available')
+            return
+
+        self.get_logger().info(f"Patrol navigate: {wp['source']} for {robot_id}")
+        future = self.fleet_navigate_client.send_goal_async(goal)
+        future.add_done_callback(
+            lambda f, m=mission, src=wp['source']: self._patrol_goal_response_callback(f, m, src))
+
+    def _patrol_goal_response_callback(self, future, mission, source):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            failed = mission.params.setdefault('_failed_waypoints', [])
+            failed.append(f"{source}: rejected")
+            self._send_next_patrol_waypoint(mission)
+            return
+
+        self.get_logger().info(f'Patrol goal accepted for {source}')
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(
+            lambda f, m=mission, src=source: self._patrol_result_callback(f, m, src))
+
+    def _patrol_result_callback(self, future, mission, source):
         result = future.result()
         success = all(r.success for r in result.result.results)
-        reason = 'Navigation complete' if success else (result.result.results[0].message if result.result.results else 'Unknown error')
-        self._mission_completed(success, reason)
+        if success:
+            self.get_logger().info(f"Patrol waypoint reached: {source}")
+        else:
+            msg = result.result.results[0].message if result.result.results else 'failed'
+            self.get_logger().warn(f"Patrol waypoint failed: {source} — {msg}")
+            failed = mission.params.setdefault('_failed_waypoints', [])
+            failed.append(f"{source}: {msg}")
+
+            on_stuck = mission.params.get('on_stuck')
+            if on_stuck and 'stuck' in msg.lower():
+                mission.params['_contingency_triggered'] = ('stuck', on_stuck)
+                self._handle_patrol_contingency(mission)
+                return
+
+        self._send_next_patrol_waypoint(mission)
+
+    def _handle_patrol_contingency(self, mission: MissionEntry):
+        robot_id = mission.robot_id
+        contingency_type, contingency_action = mission.params['_contingency_triggered']
+        self.get_logger().info(f"Patrol contingency: {contingency_type} → {contingency_action}")
+
+        if contingency_action == 'stop':
+            self._mission_completed(True, f'Patrol stopped due to {contingency_type}')
+        elif contingency_action == 'return_home':
+            self._execute_go_home(mission)
+        elif contingency_action == 'skip_and_continue':
+            mission.params['_contingency_triggered'] = None
+            self._send_next_patrol_waypoint(mission)
+        elif contingency_action == 'abort':
+            self._mission_completed(False, f'Patrol aborted due to {contingency_type}')
+        elif contingency_action == 'rotate_and_continue':
+            if robot_id not in self.rotation_pubs:
+                topic = f'/{robot_id}/rotation_goal'
+                self.rotation_pubs[robot_id] = self.create_publisher(Float64, topic, 10)
+            msg = Float64()
+            msg.data = 90.0
+            self.rotation_pubs[robot_id].publish(msg)
+            self.get_logger().info(f"Patrol: rotating {robot_id} 90 degrees to recover")
+            mission.params['_contingency_triggered'] = None
+            self._send_next_patrol_waypoint(mission)
+        else:
+            self.get_logger().error(f"Unknown contingency action: {contingency_action}")
+            self._mission_completed(False, f'Unknown contingency: {contingency_action}')
+
+    def _send_next_waypoint(self, mission: MissionEntry):
+        queue = mission.params.get('_waypoint_queue', [])
+        if not queue:
+            failed = mission.params.get('_failed_waypoints', [])
+            reason = 'All waypoints completed'
+            if failed:
+                reason += f' ({len(failed)} failed: {"; ".join(failed)})'
+            self._mission_completed(True, reason)
+            return
+
+        wp = queue[0]
+        mission.params['_waypoint_queue'] = queue[1:]
+
+        fleet_goal = FleetGoal()
+        fleet_goal.robot_id = mission.robot_id
+
+        pose = PoseStamped()
+        pose.header.frame_id = 'odom'
+        pose.pose.position.x = float(wp['x'])
+        pose.pose.position.y = float(wp['y'])
+        pose.pose.position.z = 0.0
+        if wp.get('yaw') is not None:
+            pose.pose.orientation.z = math.sin(float(wp['yaw']) / 2.0)
+            pose.pose.orientation.w = math.cos(float(wp['yaw']) / 2.0)
+        else:
+            pose.pose.orientation.w = 1.0
+        fleet_goal.target_pose = pose
+
+        goal = FleetNavigate.Goal()
+        goal.goals.append(fleet_goal)
+
+        if not self.fleet_navigate_client.wait_for_server(timeout_sec=5.0):
+            self._mission_completed(False, 'Fleet navigate action server not available')
+            return
+
+        self.get_logger().info(f"Navigate: {wp['source']} for {mission.robot_id}")
+        future = self.fleet_navigate_client.send_goal_async(goal)
+        future.add_done_callback(
+            lambda f, m=mission, src=wp['source']: self._navigate_goal_response_callback(f, m, src))
+
+    def _navigate_goal_response_callback(self, future, mission, source):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            failed = mission.params.setdefault('_failed_waypoints', [])
+            failed.append(f"{source}: rejected")
+            self._send_next_waypoint(mission)
+            return
+
+        self.get_logger().info(f'Goal accepted for {source}')
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(
+            lambda f, m=mission, src=source: self._navigate_result_callback(f, m, src))
+
+    def _navigate_result_callback(self, future, mission, source):
+        result = future.result()
+        success = all(r.success for r in result.result.results)
+        if success:
+            self.get_logger().info(f"Goal reached: {source}")
+        else:
+            msg = result.result.results[0].message if result.result.results else 'failed'
+            self.get_logger().warn(f"Goal failed: {source} — {msg}")
+            failed = mission.params.setdefault('_failed_waypoints', [])
+            failed.append(f"{source}: {msg}")
+        self._send_next_waypoint(mission)
 
     def _execute_set_state(self, mission: MissionEntry):
         if not self.fleet_set_state_client.wait_for_service(timeout_sec=5.0):
@@ -571,9 +776,11 @@ class LLMBridgeNode(Node):
             self._mission_completed(False, 'Fleet navigate action server not available')
             return
 
+        source = f"home({home['x']}, {home['y']})"
         self.get_logger().info(f'Sending go_home goal for {robot_id}')
         future = self.fleet_navigate_client.send_goal_async(goal)
-        future.add_done_callback(self._navigate_goal_response_callback)
+        future.add_done_callback(
+            lambda f, m=mission, s=source: self._navigate_goal_response_callback(f, m, s))
 
     def _execute_clear_emergency_stop(self, mission: MissionEntry):
         robot_id = mission.robot_id

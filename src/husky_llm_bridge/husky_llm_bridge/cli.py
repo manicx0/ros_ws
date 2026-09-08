@@ -30,14 +30,16 @@ class HuskyCLI(Node):
             String, '/llm/natural_language_response', self._natural_language_cb, 10)
         self.fleet_state = None
         self._latest_queue = None
-        self._last_event_key = None
-        self._last_event_time = 0.0
+        self._last_event = {}  # robot_id -> last_event_time
+        self._first_event = {}  # robot_id -> whether first event already printed
+        self._sketch = ''  # transient command sketch shown below prompt
+        self._sketch_time = 0.0  # when sketch was displayed
 
     def _fleet_state_cb(self, msg):
         self.fleet_state = msg
 
     def _writeln(self, text):
-        sys.stdout.write(f"\r{text}\n\033[1;32mhusky>\033[0m ")
+        sys.stdout.write(f"{text}\n")
         sys.stdout.flush()
 
     def _decision_status_cb(self, msg):
@@ -49,12 +51,14 @@ class HuskyCLI(Node):
 
     def _goal_event_cb(self, msg):
         now = time.time()
-        key = (msg.robot_id, msg.type)
-        elapsed = now - self._last_event_time
-        if key != self._last_event_key or elapsed > 2.0:
-            self._writeln(f"\033[1;34m[Event]\033[0m {msg.robot_id}: {msg.type}")
-        self._last_event_key = key
-        self._last_event_time = now
+        rid = msg.robot_id
+        if rid not in self._first_event:
+            self._first_event[rid] = True
+            self._last_event[rid] = now
+            return
+        if rid not in self._last_event or now - self._last_event[rid] > 2.0:
+            self._writeln(f"\033[1;34m[Event]\033[0m {rid}: {msg.type}")
+        self._last_event[rid] = now
 
     def _command_status_cb(self, msg):
         try:
@@ -105,21 +109,44 @@ class HuskyCLI(Node):
     def _natural_language_cb(self, msg):
         self._writeln(f"\033[1;35m[LLM]\033[0m {msg.data}")
 
+    def _draw_prompt(self):
+        """Draw the prompt area with sketch above the input line."""
+        # Clear sketch if timeout exceeded (5s)
+        if self._sketch and time.time() - self._sketch_time > 5.0:
+            self._sketch = ''
+            self._sketch_time = 0.0
+        
+        # Position cursor: go up 2 lines from top, or just print prompt
+        # We'll use simple approach: print prompt at current position
+        # The sketch will be shown below on next _writeln calls
+        if self._sketch:
+            sys.stdout.write(f"\033[1;32mhusky> {self._sketch}\033[0m\n")
+        else:
+            sys.stdout.write(f"\033[1;32mhusky>\033[0m\n")
+        sys.stdout.flush()
+
     def run(self):
         print("\033[1;36mHusky Fleet CLI\033[0m (type 'help' for commands)\n")
+        sys.stdout.write("\033[1;32mhusky>\033[0m\n")
+        sys.stdout.flush()
         while True:
             try:
-                cmd = input("\033[1;32mhusky>\033[0m ").strip()
+                cmd = input().strip()
                 if cmd in ('quit', 'exit'):
                     break
                 elif cmd == 'status':
                     self._show_status()
+                    self._draw_prompt()
                 elif cmd == 'help':
                     self._show_help()
+                    self._draw_prompt()
                 elif cmd == 'clear':
                     print("\033[2J\033[H")
+                    sys.stdout.write("\033[1;32mhusky>\033[0m\n")
+                    sys.stdout.flush()
                 elif cmd:
                     self._send_command(cmd)
+                    self._draw_prompt()
             except (EOFError, KeyboardInterrupt):
                 break
         print("\nGoodbye!")
@@ -128,6 +155,8 @@ class HuskyCLI(Node):
         msg = String()
         msg.data = cmd
         self.command_pub.publish(msg)
+        self._sketch = cmd
+        self._sketch_time = time.time()
         self._writeln(f"\033[1;34m[Sent]\033[0m {cmd}")
 
     def _show_status(self):

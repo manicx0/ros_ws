@@ -154,8 +154,8 @@ class LLMValidatorNode(Node):
             return f'{prefix}: must be an object'
 
         action = mission.get('action')
-        if action not in ('navigate', 'set_state', 'rotate', 'emergency_stop', 'go_home', 'clear_emergency_stop'):
-            return f'{prefix}: action must be "navigate", "set_state", "rotate", "emergency_stop", "go_home", or "clear_emergency_stop", got "{action}"'
+        if action not in ('navigate', 'set_state', 'rotate', 'emergency_stop', 'go_home', 'clear_emergency_stop', 'patrol'):
+            return f'{prefix}: action must be "navigate", "set_state", "rotate", "emergency_stop", "go_home", "clear_emergency_stop", or "patrol", got "{action}"'
 
         robot_id = mission.get('robot_id')
         if not isinstance(robot_id, str) or not robot_id:
@@ -175,6 +175,8 @@ class LLMValidatorNode(Node):
             return self._validate_go_home(idx, mission)
         elif action == 'clear_emergency_stop':
             return self._validate_clear_emergency_stop(idx, mission)
+        elif action == 'patrol':
+            return self._validate_patrol(idx, mission)
 
         return None
 
@@ -287,6 +289,70 @@ class LLMValidatorNode(Node):
         return None
 
     def _validate_clear_emergency_stop(self, idx, mission):
+        return None
+
+    def _validate_patrol(self, idx, mission):
+        prefix = f'Mission[{idx}]'
+
+        waypoints = mission.get('waypoints')
+        waypoint_names = mission.get('waypoint_names')
+
+        if waypoints is None and waypoint_names is None:
+            return f'{prefix}: patrol must have "waypoints" or "waypoint_names"'
+
+        if waypoints is not None:
+            if not isinstance(waypoints, list) or len(waypoints) == 0:
+                return f'{prefix}: "waypoints" must be a non-empty array'
+
+            for j, wp in enumerate(waypoints):
+                if not isinstance(wp, dict):
+                    return f'{prefix}: waypoint[{j}] must be an object'
+                x = wp.get('x')
+                y = wp.get('y')
+                lat = wp.get('lat')
+                lon = wp.get('lon')
+
+                has_odom = x is not None and y is not None
+                has_gps = lat is not None and lon is not None
+
+                if not has_odom and not has_gps:
+                    return f'{prefix}: waypoint[{j}] must have {x, y} or {lat, lon}'
+
+                if has_odom:
+                    if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+                        return f'{prefix}: waypoint[{j}] x and y must be numeric'
+
+                if has_gps:
+                    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+                        return f'{prefix}: waypoint[{j}] lat and lon must be numeric'
+                    if lat < -90 or lat > 90:
+                        return f'{prefix}: waypoint[{j}] lat must be between -90 and 90'
+                    if lon < -180 or lon > 180:
+                        return f'{prefix}: waypoint[{j}] lon must be between -180 and 180'
+
+        if waypoint_names is not None:
+            if not isinstance(waypoint_names, list) or len(waypoint_names) == 0:
+                return f'{prefix}: "waypoint_names" must be a non-empty array'
+            for j, name in enumerate(waypoint_names):
+                if not isinstance(name, str) or not name:
+                    return f'{prefix}: waypoint_names[{j}] must be a non-empty string'
+                if self.valid_waypoint_names and name not in self.valid_waypoint_names:
+                    return f'{prefix}: waypoint_names[{j}] "{name}" not in available waypoints: {sorted(self.valid_waypoint_names)}'
+
+        on_obstacle = mission.get('on_obstacle')
+        if on_obstacle is not None:
+            if not isinstance(on_obstacle, str):
+                return f'{prefix}: "on_obstacle" must be a string'
+            if on_obstacle not in ('stop', 'return_home', 'skip_and_continue'):
+                return f'{prefix}: "on_obstacle" must be "stop", "return_home", or "skip_and_continue"'
+
+        on_stuck = mission.get('on_stuck')
+        if on_stuck is not None:
+            if not isinstance(on_stuck, str):
+                return f'{prefix}: "on_stuck" must be a string'
+            if on_stuck not in ('abort', 'rotate_and_continue'):
+                return f'{prefix}: "on_stuck" must be "abort" or "rotate_and_continue"'
+
         return None
 
     def _publish_status(self, success, reason):
