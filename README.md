@@ -88,6 +88,230 @@ Full natural-language → robot command pipeline with multiple provider support.
 5. Robot completes mission → reports back → ready ✅
 6. One robot fails → reassigned automatically ❌
 
+## First Time Setup (From Scratch)
+
+If you're setting up this workspace on a fresh machine, follow these steps in order.
+
+### 1. Install ROS 2 Jazzy
+
+Follow the official [ROS 2 Jazzy installation guide](https://docs.ros.org/en/jazzy/Installation.html) for Ubuntu Noble.
+
+### 2. Add the Clearpath apt repository and install packages
+
+```bash
+sudo apt install curl -y
+sudo curl -sSL https://raw.githubusercontent.com/clearpathrobotics/clearpath_robot/master/scripts/install_jazzy.sh | sudo bash
+
+sudo apt install \
+  ros-jazzy-clearpath-common \
+  ros-jazzy-clearpath-gz \
+  ros-jazzy-clearpath-generator-common \
+  ros-jazzy-clearpath-generator-gz \
+  ros-jazzy-ros-gz-sim \
+  ros-jazzy-ros-gz-bridge \
+  ros-jazzy-behaviortree-cpp \
+  ros-jazzy-robot-localization \
+  ros-jazzy-pcl-conversions \
+  ros-jazzy-tf2-geometry-msgs \
+  libyaml-cpp-dev \
+  -y
+```
+
+### 3. Clone the workspace
+
+```bash
+cd /root
+git clone <your-repo-url> ros_ws
+cd ros_ws
+```
+
+The repo includes copies of `clearpath_common` and `clearpath_gz` in `src/` (committed before `.gitignore` excluded them). These shadow the system-installed versions and are the ones colcon builds.
+
+### 4. Create robot configs (NOT in git)
+
+The robot config directories live outside the workspace and are not tracked by git. You must create them manually:
+
+```bash
+mkdir -p /root/clearpath /root/clearpath1 /root/clearpath2
+```
+
+Create `/root/clearpath/robot.yaml`:
+```yaml
+serial_number: a200-0000
+version: 1
+system:
+  username: root
+  namespace: cpr_a200_0000
+
+platform:
+  model: a200
+
+sensors:
+  lidar3d:
+    - model: velodyne_lidar
+      urdf_enabled: true
+      launch_enabled: true
+      parent: top_chassis_link
+      xyz: [0.0, 0.0, 0.12]
+      rpy: [0.0, 0.0, 0.0]
+      ros_parameters:
+        velodyne_driver_node:
+          model: VLP16
+          frame_id: lidar3d_0_laser
+          device_ip: 192.168.131.25
+          port: 2368
+        velodyne_transform_node:
+          model: VLP16
+          fixed_frame: lidar3d_0_laser
+          target_frame: lidar3d_0_laser
+  gps:
+    - model: garmin_18x
+      urdf_enabled: true
+      launch_enabled: true
+      parent: top_chassis_link
+      xyz: [0.0, 0.0, 0.1]
+      rpy: [0.0, 0.0, 0.0]
+```
+
+Create `/root/clearpath1/robot.yaml` (same, but different serial and namespace):
+```yaml
+serial_number: a200-0001
+version: 1
+system:
+  username: root
+  namespace: cpr_a200_0001
+
+platform:
+  model: a200
+
+sensors:
+  lidar3d:
+    - model: velodyne_lidar
+      urdf_enabled: true
+      launch_enabled: true
+      parent: top_chassis_link
+      xyz: [0.0, 0.0, 0.12]
+      rpy: [0.0, 0.0, 0.0]
+      ros_parameters:
+        velodyne_driver_node:
+          model: VLP16
+          frame_id: lidar3d_0_laser
+          device_ip: 192.168.131.25
+          port: 2368
+        velodyne_transform_node:
+          model: VLP16
+          fixed_frame: lidar3d_0_laser
+          target_frame: lidar3d_0_laser
+  gps:
+    - model: garmin_18x
+      urdf_enabled: true
+      launch_enabled: true
+      parent: top_chassis_link
+      xyz: [0.0, 0.0, 0.1]
+      rpy: [0.0, 0.0, 0.0]
+```
+
+Create `/root/clearpath2/robot.yaml` (same, but serial a200-0002 and namespace cpr_a200_0002):
+```yaml
+serial_number: a200-0002
+version: 1
+system:
+  username: root
+  namespace: cpr_a200_0002
+
+platform:
+  model: a200
+
+sensors:
+  lidar3d:
+    - model: velodyne_lidar
+      urdf_enabled: true
+      launch_enabled: true
+      parent: top_chassis_link
+      xyz: [0.0, 0.0, 0.12]
+      rpy: [0.0, 0.0, 0.0]
+      ros_parameters:
+        velodyne_driver_node:
+          model: VLP16
+          frame_id: lidar3d_0_laser
+          device_ip: 192.168.131.25
+          port: 2368
+        velodyne_transform_node:
+          model: VLP16
+          fixed_frame: lidar3d_0_laser
+          target_frame: lidar3d_0_laser
+  gps:
+    - model: garmin_18x
+      urdf_enabled: true
+      launch_enabled: true
+      parent: top_chassis_link
+      xyz: [0.0, 0.0, 0.1]
+      rpy: [0.0, 0.0, 0.0]
+```
+
+> **Why these are not in git:** The `/root/clearpath*/` directories contain generated URDF, launch, and config files produced by the Clearpath generators. They live outside the workspace and were never committed. Without them, `multi_sim.launch.py` cannot spawn robots.
+
+### 5. Generate platform/sensor configs for each robot
+
+The Clearpath generators read `robot.yaml` and produce the URDF, launch files, and controller configs that `robot_spawn.launch.py` needs:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+
+# Robot 0
+ros2 run clearpath_generator_common generate_description -s /root/clearpath/
+ros2 run clearpath_generator_common generate_semantic_description -s /root/clearpath/
+ros2 run clearpath_generator_gz generate_launch -s /root/clearpath/
+ros2 run clearpath_generator_gz generate_param -s /root/clearpath/
+
+# Robot 1
+ros2 run clearpath_generator_common generate_description -s /root/clearpath1/
+ros2 run clearpath_generator_common generate_semantic_description -s /root/clearpath1/
+ros2 run clearpath_generator_gz generate_launch -s /root/clearpath1/
+ros2 run clearpath_generator_gz generate_param -s /root/clearpath1/
+
+# Robot 2
+ros2 run clearpath_generator_common generate_description -s /root/clearpath2/
+ros2 run clearpath_generator_common generate_semantic_description -s /root/clearpath2/
+ros2 run clearpath_generator_gz generate_launch -s /root/clearpath2/
+ros2 run clearpath_generator_gz generate_param -s /root/clearpath2/
+```
+
+Each should complete without errors. If `generate_semantic_description` fails on "parent link not found", the sensor `parent:` in `robot.yaml` is wrong — it must be `top_chassis_link` for the A200.
+
+### 6. Build the workspace
+
+```bash
+cd /root/ros_ws
+source /opt/ros/jazzy/setup.bash
+colcon build --symlink-install
+```
+
+### 7. Verify and launch
+
+```bash
+source install/setup.bash
+
+# Single robot test
+ros2 launch husky_bringup sim.launch.py
+
+# Multi-robot fleet
+ros2 launch husky_bringup multi_sim.launch.py
+```
+
+### What gets generated vs what's in git
+
+| Item | In git? | How to get it |
+|------|---------|---------------|
+| `src/husky_*` (custom packages) | Yes | Comes with clone |
+| `src/clearpath_common/` | Yes | Comes with clone (shadows system install) |
+| `src/clearpath_gz/` | Yes | Comes with clone (shadows system install) |
+| `fleet.yaml` | Yes | `src/husky_fleet_manager/config/fleet.yaml` |
+| `/root/clearpath*/robot.yaml` | **No** | Must create manually (see step 4) |
+| `/root/clearpath*/platform/` | **No** | Generated in step 5 |
+| `/root/clearpath*/sensors/` | **No** | Generated in step 5 |
+| `/root/clearpath*/robot.urdf.xacro` | **No** | Generated in step 5 |
+
 ## Quick Start
 
 ### Single Robot
